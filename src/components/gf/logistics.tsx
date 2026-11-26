@@ -143,12 +143,12 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
   const [partners, setPartners] = useState<Partner[]>([]);
   const [type, setType] = useState("LOCAL");
   const [selected, setSelected] = useState<string[]>([]);
-  const [originLocationId, setOriginLocationId] = useState("");
-  const [originWarehouseId, setOriginWarehouseId] = useState("");
-  const [destLocationId, setDestLocationId] = useState("");
-  const [destWarehouseId, setDestWarehouseId] = useState("");
+  const [originLocationOverride, setOriginLocationId] = useState("");
+  const [originWarehouseOverride, setOriginWarehouseId] = useState("");
+  const [destLocationOverride, setDestLocationId] = useState("");
+  const [destWarehouseOverride, setDestWarehouseId] = useState("");
   const [expectedArrival, setExpectedArrival] = useState("");
-  const [transportMethod, setTransportMethod] = useState("");
+  const [transportOverride, setTransportMethod] = useState<string | null>(null);
   const [transportCompanyId, setTransportCompanyId] = useState("");
   const [freightForwarderId, setFreightForwarderId] = useState("");
   const [trackingId, setTrackingId] = useState("");
@@ -161,41 +161,61 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
 
   useEffect(() => {
     api<Pkg[]>("ops/packages").then((all) => setPkgs(all.filter((p) => p.status === "PACKED"))).catch(() => null);
-    api<Location[]>("master/locations").then((ls) => {
-      setLocations(ls);
-      const dhk = ls.find((l) => l.name === "Dhaka");
-      const syl = ls.find((l) => l.name === "Sylhet");
-      if (dhk) setOriginLocationId(dhk.id);
-      if (syl) setDestLocationId(syl.id);
-    }).catch(() => null);
+    api<Location[]>("master/locations")
+      .then(setLocations)
+      .catch(() => null);
     api<Warehouse[]>("master/warehouses").then(setWarehouses).catch(() => null);
     api<Partner[]>("master/partners").then((ps) => setPartners(ps.filter((p) => ["TRANSPORT", "COURIER", "FREIGHT_FORWARDER"].includes(p.type)))).catch(() => null);
   }, []);
 
-  const originWhs = warehouses.filter((w) => w.locationId === originLocationId);
-  const destWhs = warehouses.filter((w) => w.locationId === destLocationId);
-  const total = Object.values(charges).reduce((a, b) => a + Number(b || 0), 0);
-  const selectedUnits = pkgs.filter((p) => selected.includes(p.id)).reduce((a, p) => a + p.items.reduce((x, i) => x + i.qty, 0), 0);
+  const defaultOrigin = locations.find(
+    (l) => l.name === (type === "INTERNATIONAL" ? "Sylhet" : "Dhaka")
+  )?.id ?? "";
 
-  useEffect(() => {
-    if (type === "INTERNATIONAL") {
-      const syl = locations.find((l) => l.name === "Sylhet");
-      const uk = locations.find((l) => l.name === "United Kingdom");
-      if (syl) setOriginLocationId(syl.id);
-      if (uk) setDestLocationId(uk.id);
-      setTransportMethod("Air Cargo");
-    } else {
-      const dhk = locations.find((l) => l.name === "Dhaka");
-      const syl = locations.find((l) => l.name === "Sylhet");
-      if (dhk) setOriginLocationId(dhk.id);
-      if (syl) setDestLocationId(syl.id);
-      setTransportMethod("Truck");
-    }
-  }, [type, locations]);
-  useEffect(() => {
-    setOriginWarehouseId(originWhs.find((w) => w.type === "MAIN")?.id ?? originWhs[0]?.id ?? "");
-    setDestWarehouseId(destWhs.find((w) => w.type === "MAIN")?.id ?? destWhs[0]?.id ?? "");
-  }, [originLocationId, destLocationId]);
+  const defaultDestination = locations.find(
+    (l) => l.name === (type === "INTERNATIONAL" ? "United Kingdom" : "Sylhet")
+  )?.id ?? "";
+
+  const originLocationId = originLocationOverride || defaultOrigin;
+  const destLocationId = destLocationOverride || defaultDestination;
+
+  const originWhs = warehouses.filter(
+    (w) => w.locationId === originLocationId
+  );
+
+  const destWhs = warehouses.filter(
+    (w) => w.locationId === destLocationId
+  );
+
+  const originWarehouseId =
+    originWhs.find((w) => w.id === originWarehouseOverride)?.id ??
+    originWhs.find((w) => w.type === "MAIN")?.id ??
+    originWhs[0]?.id ?? "";
+
+  const destWarehouseId =
+    destWhs.find((w) => w.id === destWarehouseOverride)?.id ??
+    destWhs.find((w) => w.type === "MAIN")?.id ??
+    destWhs[0]?.id ?? "";
+
+  const transportMethod =
+    transportOverride ?? (type === "INTERNATIONAL" ? "Air Cargo" : "Truck");
+
+  const total = Object.values(charges).reduce(
+    (a, b) => a + Number(b || 0), 0
+  );
+
+  const selectedUnits = pkgs
+    .filter((p) => selected.includes(p.id))
+    .reduce((a, p) => a + p.items.reduce((x, i) => x + i.qty, 0), 0);
+
+  const changeShipmentType = (value: string) => {
+    setType(value);
+    setOriginLocationId("");
+    setDestLocationId("");
+    setOriginWarehouseId("");
+    setDestWarehouseId("");
+    setTransportMethod(null);
+  };
 
   const submit = async (dispatchNow: boolean) => {
     setBusy(true); setError(null);
@@ -228,11 +248,14 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
         <ErrorText error={error} />
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="space-y-1"><Label>Type</Label>
-            <Select value={type} onValueChange={setType}><SelectTrigger><SelectValue /></SelectTrigger>
+            <Select value={type} onValueChange={changeShipmentType}><SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="LOCAL">Local</SelectItem><SelectItem value="INTERNATIONAL">International</SelectItem></SelectContent></Select>
           </div>
           <div className="space-y-1"><Label>Origin location</Label>
-            <Select value={originLocationId} onValueChange={setOriginLocationId}><SelectTrigger><SelectValue /></SelectTrigger>
+            <Select value={originLocationId} onValueChange={(value) => {
+      setOriginLocationId(value);
+      setOriginWarehouseId("");
+    }}><SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{locations.filter((l) => l.type === "BUSINESS").map((l) => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}</SelectContent></Select>
           </div>
           <div className="space-y-1"><Label>Origin warehouse</Label>
@@ -241,7 +264,10 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
           </div>
           <div className="space-y-1"><Label>Expected arrival</Label><Input type="date" value={expectedArrival} onChange={(e) => setExpectedArrival(e.target.value)} /></div>
           <div className="space-y-1"><Label>Destination location</Label>
-            <Select value={destLocationId} onValueChange={setDestLocationId}><SelectTrigger><SelectValue /></SelectTrigger>
+            <Select value={destLocationId} onValueChange={(value) => {
+      setDestLocationId(value);
+      setDestWarehouseId("");
+    }}><SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{locations.filter((l) => l.type === "BUSINESS").map((l) => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}</SelectContent></Select>
           </div>
           <div className="space-y-1"><Label>Destination warehouse</Label>

@@ -47,4 +47,25 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
   ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills"]
 }];
 
-export default eslintConfig;
+
+const garmentflowGlobalIgnores = {
+  ignores: [
+    ".patch-backups/**",
+    "node_modules/**",
+    ".next/**",
+    ".vercel/**",
+    "coverage/**",
+    "dist/**",
+    "build/**",
+    "out/**",
+  ],
+};
+
+const garmentflowBaseConfig = eslintConfig;
+
+const garmentflowConfig = [
+  garmentflowGlobalIgnores,
+  ...garmentflowBaseConfig,
+];
+
+export default garmentflowConfig;
