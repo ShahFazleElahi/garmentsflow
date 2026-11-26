@@ -36,3 +36,5 @@ coverage/
 *.key
 *.log
 *.tsbuildinfo
+.vercel
+.env*
