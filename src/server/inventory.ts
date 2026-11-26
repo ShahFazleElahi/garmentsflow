@@ -36,7 +36,7 @@ export async function postMaterialMovement(tx: Tx, input: MaterialMovementInput)
     const from = await tx.materialStock.findUnique({
       where: { materialId_warehouseId: { materialId: input.materialId, warehouseId: input.fromWarehouseId } },
     });
-    const available = from ? D(from.qty) : new Prisma.Decimal(0);
+    const available = from ? D(from.qty).minus(from.reservedQty) : D(0);
     if (qty.gt(available)) {
       throw new Error(
         `Insufficient stock for ${material.name}: available ${N(available)} ${material.baseUnit}, requested ${N(qty)}`
@@ -44,7 +44,7 @@ export async function postMaterialMovement(tx: Tx, input: MaterialMovementInput)
     }
     if (from) {
       unitCost = D(from.avgCost);
-      const updated = await tx.materialStock.updateMany({ where: { id: from.id, qty: from.qty, avgCost: from.avgCost }, data: { qty: { decrement: qty } } });
+      const updated = await tx.materialStock.updateMany({ where: { id: from.id, qty: from.qty, reservedQty: from.reservedQty, avgCost: from.avgCost }, data: { qty: { decrement: qty } } });
       if (updated.count !== 1) throw new Error("Stock changed; retry transaction");
     }
   }
@@ -74,7 +74,7 @@ export async function postMaterialMovement(tx: Tx, input: MaterialMovementInput)
     });
   }
 
-  await tx.inventoryMovement.create({
+  return tx.inventoryMovement.create({
     data: {
       movementDate: input.date ?? new Date(),
       materialId: input.materialId,
@@ -119,7 +119,7 @@ export type FinishedMovementInput = {
   fromWarehouseId?: string | null;
   toWarehouseId?: string | null;
   qty: number;
-  unitCost?: number | null;
+  unitCost?: number | Prisma.Decimal | null;
   type: string; // PRODUCTION_IN | PACK | UNPACK | DISPATCH_OUT | RECEIVE_IN | SALE_OUT | RETURN_IN | ADJUST | WRITE_OFF
   refType?: string;
   refId?: string;
@@ -132,6 +132,7 @@ export type FinishedMovementInput = {
 
 export async function postFinishedMovement(tx: Tx, input: FinishedMovementInput) {
   if (!Number.isSafeInteger(input.qty) || input.qty <= 0) throw new Error("Finished movement quantity must be positive");
+  if (!input.fromWarehouseId && !input.toWarehouseId) throw new Error("Finished movement requires a warehouse");
   const variant = await tx.productVariant.findUnique({ where: { id: input.variantId } });
   if (!variant) throw new Error("Product variant not found");
   let unitCost = D(input.unitCost ?? 0);
@@ -139,7 +140,9 @@ export async function postFinishedMovement(tx: Tx, input: FinishedMovementInput)
     const from = await tx.finishedStock.findUnique({
       where: { variantId_warehouseId: { variantId: input.variantId, warehouseId: input.fromWarehouseId } },
     });
-    const available = from ? from.qty : 0;
+    const requiresPassed = ["PACK", "SALE_OUT", "TRANSFER"].includes(input.type);
+    if (requiresPassed && from?.qualityStatus !== "PASSED") throw new Error("Only QC-passed stock is available for this movement");
+    const available = from ? from.qty - from.reservedQty : 0;
     if (input.qty > available) {
       throw new Error(
         `Insufficient finished stock for ${variant.sku}: available ${available}, requested ${input.qty}`
@@ -147,7 +150,13 @@ export async function postFinishedMovement(tx: Tx, input: FinishedMovementInput)
     }
     if (from) {
       unitCost = D(from.unitCost);
-      const updated = await tx.finishedStock.updateMany({ where: { id: from.id, qty: from.qty, unitCost: from.unitCost }, data: { qty: { decrement: input.qty } } });
+      const updated = await tx.finishedStock.updateMany({ where: {
+        id: from.id,
+        qty: from.qty,
+        reservedQty: from.reservedQty,
+        unitCost: from.unitCost,
+        ...(requiresPassed ? { qualityStatus: "PASSED" } : {}),
+      }, data: { qty: { decrement: input.qty } } });
       if (updated.count !== 1) throw new Error("Stock changed; retry transaction");
     }
   }
@@ -169,7 +178,7 @@ export async function postFinishedMovement(tx: Tx, input: FinishedMovementInput)
     const updated = await tx.finishedStock.updateMany({ where: { id: dest.id, qty: dest.qty, unitCost: dest.unitCost }, data: { qty: newQty, unitCost: newAvg.toDecimalPlaces(4) } });
     if (updated.count !== 1) throw new Error("Stock changed; retry transaction");
   }
-  await tx.finishedMovement.create({
+  return tx.finishedMovement.create({
     data: {
       movementDate: input.date ?? new Date(),
       variantId: input.variantId,
@@ -184,6 +193,7 @@ export async function postFinishedMovement(tx: Tx, input: FinishedMovementInput)
 
 /** MRP engine: compute requirements from approved BOM × variant quantities. */
 export async function generateMRP(tx: Tx, planId: string) {
+  await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${planId} FOR UPDATE`;
   const plan = await tx.productPlan.findUnique({
     where: { id: planId },
     include: { variants: true, boms: { where: { status: "APPROVED" }, include: { items: true }, orderBy: { version: "desc" } } },
@@ -194,13 +204,21 @@ export async function generateMRP(tx: Tx, planId: string) {
 
   // aggregate per material, honoring size overrides
   const need = new Map<string, Prisma.Decimal>();
+  const netNeed = new Map<string, Prisma.Decimal>();
   for (const variant of plan.variants) {
     if (variant.plannedQty <= 0) continue;
     for (const item of bom.items) {
+      if (item.colorId && item.colorId !== variant.colorId) continue;
       let per = D(item.qtyPerPiece);
       const overrides = item.sizeOverridesJson ? JSON.parse(item.sizeOverridesJson) as Record<string, number> : null;
       if (overrides && overrides[variant.sizeName] != null) per = D(overrides[variant.sizeName]);
-      const gross = per.mul(D(variant.plannedQty)).mul(D(1).add(D(item.wastagePct).div(100)));
+      const net = per.mul(D(variant.plannedQty));
+      const gross = net.mul(D(1).add(D(item.wastagePct).div(100)));
+
+      netNeed.set(
+        item.materialId,
+        (netNeed.get(item.materialId) ?? new Prisma.Decimal(0)).add(net)
+      );
       need.set(item.materialId, (need.get(item.materialId) ?? new Prisma.Decimal(0)).add(gross));
     }
   }
@@ -213,42 +231,54 @@ export async function generateMRP(tx: Tx, planId: string) {
   const incoming = new Map<string, Prisma.Decimal>();
   for (const po of openPos) {
     for (const item of po.items) {
-      const remaining = D(item.qty).minus(D(item.receivedQty));
+      const remaining = Prisma.Decimal.max(D(item.qty).minus(item.receivedQty), 0);
       incoming.set(item.materialId, (incoming.get(item.materialId) ?? new Prisma.Decimal(0)).add(remaining));
     }
   }
 
   const materialIds = [...need.keys()];
   const stocks = await tx.materialStock.findMany({
-    where: { materialId: { in: materialIds }, warehouse: { type: "MAIN" } },
+    where: { materialId: { in: materialIds }, warehouse: { type: "MAIN", isActive: true, location: { isActive: true } } },
   });
   const reservations = await tx.inventoryReservation.findMany({
-    where: { materialId: { in: materialIds }, status: "ACTIVE" },
+    where: { planId, materialId: { in: materialIds }, status: "ACTIVE" },
   });
   const materials = await tx.material.findMany({ where: { id: { in: materialIds } } });
   const matById = new Map(materials.map((m) => [m.id, m]));
 
+  await tx.materialRequirement.deleteMany({
+    where: { planId, materialId: { notIn: materialIds } },
+  });
+
   const rows: unknown[] = [];
   for (const [materialId, gross] of need) {
-    const stockQty = stocks.filter((s) => s.materialId === materialId)
-      .reduce((a, s) => a.add(D(s.qty)), new Prisma.Decimal(0));
-    const reservedQty = reservations.filter((r) => r.materialId === materialId)
-      .reduce((a, r) => a.add(D(r.qty)), new Prisma.Decimal(0));
+    const materialStocks = stocks.filter(s => s.materialId === materialId);
+    const warehouseIds = new Set(materialStocks.map(s => s.warehouseId));
+    const stockQty = materialStocks.reduce((a, s) => a.add(s.qty), D(0));
+    const reservedQty = materialStocks.reduce((a, s) => a.add(s.reservedQty), D(0));
+    const reservedForPlan = reservations.filter(r => r.materialId === materialId && warehouseIds.has(r.warehouseId))
+      .reduce((a, r) => a.add(r.qty), D(0));
     const inc = incoming.get(materialId) ?? new Prisma.Decimal(0);
     const mat = matById.get(materialId)!;
-    const available = stockQty.minus(reservedQty);
+    const available = Prisma.Decimal.max(stockQty.minus(reservedQty).add(Prisma.Decimal.min(reservedQty, reservedForPlan)), 0);
     const shortage = gross.minus(available).minus(inc);
     const suggested = shortage.gt(0) ? shortage : new Prisma.Decimal(0);
     const estCost = suggested.mul(D(mat.avgCost));
-    const row = await tx.materialRequirement.create({
-      data: {
-        planId, materialId,
-        netQty: gross.toDecimalPlaces(3), wastageQty: 0, grossQty: gross.toDecimalPlaces(3),
+    const calculated = {
+        netQty: (netNeed.get(materialId) ?? new Prisma.Decimal(0)).toDecimalPlaces(3),
+        wastageQty: gross.minus(
+          netNeed.get(materialId) ?? new Prisma.Decimal(0)
+        ).toDecimalPlaces(3),
+        grossQty: gross.toDecimalPlaces(3),
         stockQty: stockQty.toDecimalPlaces(3), reservedQty: reservedQty.toDecimalPlaces(3),
         incomingQty: inc.toDecimalPlaces(3),
         shortageQty: shortage.gt(0) ? shortage.toDecimalPlaces(3) : 0,
         suggestedQty: suggested.toDecimalPlaces(3), estCost,
-      },
+    };
+    const row = await tx.materialRequirement.upsert({
+      where: { planId_materialId: { planId, materialId } },
+      create: { planId, materialId, ...calculated },
+      update: { ...calculated, generatedAt: new Date() },
     });
     rows.push(row);
   }

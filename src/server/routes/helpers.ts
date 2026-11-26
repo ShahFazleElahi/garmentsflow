@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
-import { getSessionUser, can, AuthUser } from "@/server/auth";
+import { getSessionUser, can, AuthUser, scopedLocations } from "@/server/auth";
+import { db } from "@/lib/db";
 import type { Permission } from "@/lib/constants";
 
 export function ok(data: unknown, init?: number) {
   return NextResponse.json({ ok: true, data }, { status: init ?? 200, headers: { "Cache-Control": "private, no-store" } });
 }
 export function bad(error: string, status = 400) {
-  return NextResponse.json({ ok: false, error }, { status, headers: { "Cache-Control": "private, no-store" } });
+  const message = /PrismaClient|Invalid `[^\r\n]+` invocation|Can't reach database server/i.test(error)
+    ? "Database operation failed" : error;
+  return NextResponse.json({ ok: false, error: message }, { status, headers: { "Cache-Control": "private, no-store" } });
 }
 
 export async function requireUser(req: NextRequest): Promise<AuthUser | null> {
@@ -19,6 +22,14 @@ export async function requirePerm(req: NextRequest, perm: Permission): Promise<{
   if (!user) return { error: bad("Authentication required", 401) };
   if (!can(user, perm)) return { error: bad(`Permission denied: ${perm}`, 403) };
   return { user };
+}
+
+export async function canAccessWarehouses(user: AuthUser, warehouseIds: string[]) {
+  const locations = scopedLocations(user);
+  if (!locations) return true;
+  const ids = [...new Set(warehouseIds)];
+  const accessible = await db.warehouse.count({ where: { id: { in: ids }, locationId: { in: locations } } });
+  return accessible === ids.length;
 }
 
 export function parseId(segments: string[]): string | null {

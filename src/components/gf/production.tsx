@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiPost, fmtMoney, fmtNum, fmtDate, statusLabel, idem } from "@/lib/gf-api";
 import { PageHeader, StatCard, StatusBadge, ErrorText, DataTable, type Column } from "./ui-bits";
 import type { ViewProps } from "./shell";
@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/hooks/use-toast";
-import { Plus, Send, PackageOpen, Factory, Scissors, Printer, Waves, Sparkles, CheckCircle2 } from "lucide-react";
+import { Plus, Send, PackageOpen, Factory, Scissors, Printer, Waves, Sparkles } from "lucide-react";
 
 type Batch = {
   id: string; code: string; plannedQty: number; status: string; startDate: string | null;
@@ -50,12 +50,6 @@ export function ProductionView({ mode, can }: ViewProps & { mode: "batches" | "w
     else api<WorkOrder[]>("production/workorders").then(setWos).catch((e) => setError(e.message));
   }, [mode]);
   useEffect(() => { load(); }, [load]);
-
-  const refreshDetail = async (id: string) => {
-    const fresh = await api<WorkOrder>(`production/workorders/${id}`);
-    setWoDetail(fresh);
-    load();
-  };
 
   const planned = batches.reduce((a, b) => a + b.plannedQty, 0);
   const completed = batches.reduce((a, b) => a + b.variants.reduce((x, v) => x + v.completedQty, 0), 0);
@@ -136,16 +130,15 @@ export function ProductionView({ mode, can }: ViewProps & { mode: "batches" | "w
         </>
       )}
 
-      {woDetail && <WorkOrderDetail wo={woDetail} onClose={() => setWoDetail(null)} onChanged={(id) => refreshDetail(id)} can={can} />}
+      {woDetail && <WorkOrderDetail wo={woDetail} onClose={() => setWoDetail(null)} />}
       {newWo && <NewWorkOrderDialog batch={newWo} onClose={(done) => { setNewWo(null); if (done) load(); }} />}
       {issueFor && <IssueCollectDialog wo={issueFor} onClose={(done) => { setIssueFor(null); if (done) { load(); } }} />}
     </div>
   );
 }
 
-function WorkOrderDetail({ wo, onClose, onChanged, can }: { wo: WorkOrder; onClose: () => void; onChanged: (id: string) => void; can: (p: string) => boolean }) {
+function WorkOrderDetail({ wo, onClose }: { wo: WorkOrder; onClose: () => void }) {
   const Icon = TYPE_ICON[wo.type] ?? PackageOpen;
-  const [busy, setBusy] = useState(false);
   const issuedTotal = wo.materials.reduce((a, m) => a + Number(m.issuedQty), 0);
   const reconciled = wo.materials.every((m) => Math.abs(Number(m.issuedQty) - Number(m.consumedQty) - Number(m.returnedQty) - Number(m.wastedQty) - Number(m.remainingQty)) < 0.001);
 
@@ -206,18 +199,6 @@ function WorkOrderDetail({ wo, onClose, onChanged, can }: { wo: WorkOrder; onClo
 
         <DialogFooter className="gap-2">
           <Button variant="ghost" onClick={onClose}>Close</Button>
-          {can("post") && wo.status !== "COMPLETED" && wo.status !== "CANCELLED" && (
-            <>
-              {issuedTotal === 0 && (
-                <Button size="sm" variant="outline" disabled={busy} onClick={async () => {
-                  setBusy(true);
-                  try { await apiPost(`production/workorders/complete`, { id: wo.id }); toast({ title: "Work order completed" }); onChanged(wo.id); onClose(); }
-                  catch (e) { toast({ title: (e as Error).message, variant: "destructive" }); }
-                  finally { setBusy(false); }
-                }}><CheckCircle2 className="h-4 w-4 mr-1" />Complete without materials</Button>
-              )}
-            </>
-          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -296,13 +277,13 @@ function NewWorkOrderDialog({ batch, onClose }: { batch: Batch; onClose: (done: 
 }
 
 function IssueCollectDialog({ wo, onClose }: { wo: WorkOrder; onClose: (done: boolean) => void }) {
-  const [mode, setMode] = useState<"issue" | "collect">(wo.receivedQty >= wo.issuedQty ? "collect" : Number(wo.materials.reduce((a, m) => a + Number(m.issuedQty), 0)) === 0 ? "issue" : "issue");
+  const [mode, setMode] = useState<"issue" | "collect">(["DRAFT", "MATERIALS_PREPARED"].includes(wo.status) ? "issue" : "collect");
   const [stocks, setStocks] = useState<MaterialStock[]>([]);
   const [mainWarehouseId, setMainWarehouseId] = useState("");
   const [issueLines, setIssueLines] = useState<{ materialId: string; qty: number }[]>([{ materialId: "", qty: 0 }]);
   // collect state
-  const [received, setReceived] = useState(wo.issuedQty - wo.receivedQty);
-  const [accepted, setAccepted] = useState(wo.issuedQty - wo.receivedQty);
+  const [received, setReceived] = useState(wo.issuedQty - wo.receivedQty - wo.missingQty);
+  const [accepted, setAccepted] = useState(wo.issuedQty - wo.receivedQty - wo.missingQty);
   const [rejected, setRejected] = useState(0);
   const [damaged, setDamaged] = useState(0);
   const [missing, setMissing] = useState(0);
@@ -315,6 +296,8 @@ function IssueCollectDialog({ wo, onClose }: { wo: WorkOrder; onClose: (done: bo
   const [invoiceNo, setInvoiceNo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [collectionKey] = useState(idem);
+  const submitting = useRef(false);
 
   useEffect(() => {
     api<MaterialStock[]>("inventory/stocks").then((all) => {
@@ -326,13 +309,13 @@ function IssueCollectDialog({ wo, onClose }: { wo: WorkOrder; onClose: (done: bo
     api<WorkOrder>(`production/workorders/${wo.id}`).then((fresh) => {
       try {
         const pricing = JSON.parse((fresh as unknown as { pricingJson: string }).pricingJson ?? "{}") as { perPiece?: number };
-        const remaining = fresh.issuedQty - fresh.receivedQty;
+        const remaining = fresh.issuedQty - fresh.receivedQty - fresh.missingQty;
         setServiceCharge(Math.round(remaining * (pricing.perPiece ?? 0)));
       } catch { /* default 0 */ }
     }).catch(() => null);
   }, [wo.id, wo.issuedQty, wo.receivedQty]);
 
-  const outstanding = wo.issuedQty - wo.receivedQty;
+  const outstanding = wo.issuedQty - wo.receivedQty - wo.missingQty;
 
   const submitIssue = async () => {
     setBusy(true); setError(null);
@@ -347,17 +330,19 @@ function IssueCollectDialog({ wo, onClose }: { wo: WorkOrder; onClose: (done: bo
   };
 
   const submitCollect = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
       await apiPost("production/workorders/receive", {
         workOrderId: wo.id, receivedQty: received, acceptedQty: accepted, rejectedQty: rejected,
         damagedQty: damaged, missingQty: missing, pendingQty: pending,
         consumed, returned, wasted, remaining: {},
-        serviceCharge, transportCost, invoiceNo: invoiceNo || undefined, idempotencyKey: idem(),
+        serviceCharge, transportCost, invoiceNo: invoiceNo || undefined, idempotencyKey: collectionKey,
       });
       toast({ title: "Collection recorded", description: "Materials reconciled and vendor invoiced." });
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
 
   const accounted = accepted + rejected + damaged + missing + pending;
@@ -437,7 +422,7 @@ function IssueCollectDialog({ wo, onClose }: { wo: WorkOrder; onClose: (done: bo
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
-              <Button onClick={submitCollect} disabled={busy || received <= 0} className="bg-emerald-600 hover:bg-emerald-700"><PackageOpen className="h-4 w-4 mr-1" />Post collection</Button>
+              <Button onClick={submitCollect} disabled={busy || received + missing <= 0 || received !== accepted + rejected + damaged || received + missing + pending > outstanding} className="bg-emerald-600 hover:bg-emerald-700"><PackageOpen className="h-4 w-4 mr-1" />Post collection</Button>
             </DialogFooter>
           </TabsContent>
         </Tabs>

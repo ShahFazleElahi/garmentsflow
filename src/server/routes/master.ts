@@ -1,18 +1,20 @@
 import { db } from "@/lib/db";
-import { bad, ok, q, ser, requirePerm } from "./helpers";
+import { bad, ok, q, ser, requirePerm, canAccessWarehouses } from "./helpers";
 import { NextRequest } from "next/server";
 import { D } from "../core";
-import { filterPartnerFinancial, can } from "../auth";
+import { filterPartnerFinancial, can, scopedLocations } from "../auth";
 
 export async function handleGet(segments: string[], req: NextRequest) {
   const [resource, id] = segments;
   const auth = await requirePerm(req, "view");
   if ("error" in auth) return auth.error;
   const { user } = auth;
+  const locations = scopedLocations(user);
 
   switch (resource) {
     case "locations": {
       const rows = await db.location.findMany({
+        where: locations ? { id: { in: locations } } : undefined,
         include: { warehouses: true, partner: { select: { id: true, name: true, code: true } } },
         orderBy: { code: "asc" },
       });
@@ -20,6 +22,7 @@ export async function handleGet(segments: string[], req: NextRequest) {
     }
     case "warehouses": {
       const rows = await db.warehouse.findMany({
+        where: locations ? { locationId: { in: locations } } : undefined,
         include: { location: true },
         orderBy: { code: "asc" },
       });
@@ -42,9 +45,16 @@ export async function handleGet(segments: string[], req: NextRequest) {
       return ok(ser(data));
     }
     case "materials": {
+      const financial = can(user, "view_financial");
       const rows = await db.material.findMany({
+        omit: { purchasePrice: !financial, avgCost: !financial },
         include: {
-          category: true, stocks: { include: { warehouse: true } },
+          category: true,
+          stocks: {
+            where: locations ? { warehouse: { locationId: { in: locations } } } : undefined,
+            omit: { avgCost: !financial },
+            include: { warehouse: true },
+          },
         },
         orderBy: { name: "asc" },
       });
@@ -88,6 +98,8 @@ export async function handlePost(segments: string[], body: Record<string, unknow
   const auth = await requirePerm(req, "edit");
   if ("error" in auth) return auth.error;
   const { user } = auth;
+  const assignedLocations = scopedLocations(user);
+  const financial = can(user, "view_financial");
   if (["locations", "warehouses"].includes(resource) && !can(user, "manage_locations")) return bad("Permission denied: manage_locations", 403);
   if (["accounts", "exchange-rates"].includes(resource) && !can(user, "view_financial")) return bad("Permission denied: view_financial", 403);
   if (resource === "settings" && user.roleKey !== "OWNER") return bad("Owner access required", 403);
@@ -95,38 +107,77 @@ export async function handlePost(segments: string[], body: Record<string, unknow
   switch (resource) {
     case "locations": {
       if (action === "create") {
+        if (assignedLocations) return bad("Creating locations requires unrestricted location access", 403);
+        const code = typeof body.code === "string" ? body.code.trim() : "";
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const type = String(body.type ?? "BUSINESS");
+        if (!code || !name || !["BUSINESS", "TRANSIT"].includes(type)) return bad("A location code, name and supported type are required");
         const row = await db.location.create({
           data: {
-            code: String(body.code), name: String(body.name), country: String(body.country ?? "Bangladesh"),
+            code, name, country: String(body.country ?? "Bangladesh"),
             division: body.division as string | undefined, district: body.district as string | undefined,
-            timezone: String(body.timezone ?? "Asia/Dhaka"), type: String(body.type ?? "BUSINESS"),
+            timezone: String(body.timezone ?? "Asia/Dhaka"), type,
           },
         });
         return ok(ser(row));
       }
       if (action === "update") {
-        const row = await db.location.update({ where: { id: String(body.id) }, data: body as never });
+        const id = String(body.id);
+        if (assignedLocations && !assignedLocations.includes(id)) return bad("Location access denied", 403);
+        const current = await db.location.findUnique({ where: { id }, include: { _count: { select: { warehouses: true } } } });
+        if (!current) return bad("Location not found", 404);
+        if ((body.type !== undefined && body.type !== current.type) ||
+            (body.partnerId !== undefined && body.partnerId !== current.partnerId) ||
+            (current._count.warehouses > 0 && body.country !== undefined && body.country !== current.country)) {
+          return bad("Location type, ownership and warehouse country require reconciliation", 409);
+        }
+        const row = await db.location.update({ where: { id }, data: {
+          name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined,
+          country: typeof body.country === "string" && body.country.trim() ? body.country.trim() : undefined,
+          division: typeof body.division === "string" ? body.division : undefined,
+          district: typeof body.district === "string" ? body.district : undefined,
+          timezone: typeof body.timezone === "string" ? body.timezone : undefined,
+          isActive: typeof body.isActive === "boolean" ? body.isActive : undefined,
+        } });
         return ok(ser(row));
       }
       break;
     }
     case "warehouses": {
       if (action === "create") {
+        const locationId = String(body.locationId ?? "");
+        if (assignedLocations && !assignedLocations.includes(locationId)) return bad("Location access denied", 403);
+        const code = typeof body.code === "string" ? body.code.trim() : "";
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const type = String(body.type ?? "MAIN");
+        if (!code || !name || !["MAIN", "TRANSIT", "QUARANTINE"].includes(type)) return bad("A warehouse code, name and supported type are required");
+        if (!await db.location.count({ where: { id: locationId, isActive: true, type: { not: "VENDOR" } } })) return bad("An active business or transit location is required");
         const row = await db.warehouse.create({
           data: {
-            code: String(body.code), name: String(body.name), locationId: String(body.locationId),
-            type: String(body.type ?? "MAIN"),
+            code, name, locationId, type,
           },
         });
         return ok(ser(row));
       }
       if (action === "update") {
-        const row = await db.warehouse.update({ where: { id: String(body.id) }, data: body as never });
+        const id = String(body.id);
+        if (!await canAccessWarehouses(user, [id])) return bad("Warehouse access denied", 403);
+        const current = await db.warehouse.findUnique({ where: { id } });
+        if (!current) return bad("Warehouse not found", 404);
+        if ((body.locationId !== undefined && body.locationId !== current.locationId) ||
+            (body.type !== undefined && body.type !== current.type)) return bad("Warehouse location and type require inventory reconciliation", 409);
+        const row = await db.warehouse.update({ where: { id }, data: {
+          name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined,
+          isActive: typeof body.isActive === "boolean" ? body.isActive : undefined,
+        } });
         return ok(ser(row));
       }
       break;
     }
     case "partners": {
+      if (!financial && (body.bankInfo != null || (body.openingBalance != null && Number(body.openingBalance) !== 0))) {
+        return bad("Permission denied: view_financial", 403);
+      }
       if (action === "create") {
         const count = await db.businessPartner.count();
         const row = await db.businessPartner.create({
@@ -143,36 +194,47 @@ export async function handlePost(segments: string[], body: Record<string, unknow
             shopNo: body.shopNo as string | undefined, address: body.address as string | undefined,
             mapsUrl: body.mapsUrl as string | undefined, taxId: body.taxId as string | undefined,
             paymentTerms: body.paymentTerms as string | undefined,
-            openingBalance: D(body.openingBalance as number), bankInfo: body.bankInfo as string | undefined,
+            openingBalance: financial ? D(body.openingBalance as number) : D(0),
+            bankInfo: financial ? body.bankInfo as string | undefined : undefined,
             rating: Number(body.rating ?? 0), notes: body.notes as string | undefined,
             createdById: user.id,
           },
         });
-        return ok(ser(row));
+        return ok(ser(filterPartnerFinancial(row, user)));
       }
       if (action === "update") {
-        const { id, services, openingBalance, ...rest } = body as Record<string, unknown> & { id: string };
+        const { id, services, openingBalance } = body as Record<string, unknown> & { id: string };
+        const metadata = ["name", "ownerName", "contactPerson", "phone", "altPhone", "whatsapp", "email",
+          "website", "country", "division", "district", "area", "marketName", "shopNo", "address", "mapsUrl",
+          "taxId", "paymentTerms", "rating", "notes", "type"];
+        const patch = Object.fromEntries(metadata.filter(key => body[key] !== undefined).map(key => [key, body[key]]));
         const row = await db.businessPartner.update({
           where: { id },
           data: {
-            ...rest,
+            ...patch,
             ...(services ? { servicesJson: JSON.stringify(services) } : {}),
-            ...(openingBalance != null ? { openingBalance: D(openingBalance as number) } : {}),
+            ...(financial && body.bankInfo !== undefined ? { bankInfo: body.bankInfo } : {}),
+            ...(financial && openingBalance != null ? { openingBalance: D(openingBalance as number) } : {}),
           } as never,
         });
-        return ok(ser(row));
+        return ok(ser(filterPartnerFinancial(row, user)));
       }
       if (action === "deactivate" || action === "activate") {
         const row = await db.businessPartner.update({
           where: { id: String(body.id) }, data: { isActive: action === "activate" },
         });
-        return ok(ser(row));
+        return ok(ser(filterPartnerFinancial(row, user)));
       }
       break;
     }
     case "materials": {
+      if (!financial && (body.avgCost != null || (body.purchasePrice != null && Number(body.purchasePrice) !== 0))) {
+        return bad("Permission denied: view_financial", 403);
+      }
+      if (body.avgCost !== undefined) return bad("Average cost is maintained by inventory movements", 409);
       if (action === "create") {
         const row = await db.material.create({
+          omit: { purchasePrice: !financial, avgCost: !financial },
           data: {
             sku: String(body.sku), name: String(body.name), categoryId: (body.categoryId as string) || null,
             description: body.description as string | undefined, composition: body.composition as string | undefined,
@@ -189,13 +251,16 @@ export async function handlePost(segments: string[], body: Record<string, unknow
         return ok(ser(row));
       }
       if (action === "update") {
-        const { id, ...rest } = body as Record<string, unknown> & { id: string };
-        const patch: Record<string, unknown> = { ...rest };
-        for (const k of ["purchasePrice", "minStock", "reorderLevel"]) {
-          if (rest[k] != null) patch[k] = D(rest[k] as number);
+        const id = String(body.id);
+        const metadata = ["name", "categoryId", "description", "composition", "width", "gsm", "colorName",
+          "shade", "dyeLot", "preferredSupplierId", "purchaseUnit", "baseUnit", "conversionNote", "isActive"];
+        const patch = Object.fromEntries(metadata.filter(key => body[key] !== undefined).map(key => [key, body[key]]));
+        for (const key of financial ? ["purchasePrice", "minStock", "reorderLevel"] : ["minStock", "reorderLevel"]) {
+          if (body[key] != null) patch[key] = D(body[key] as number);
         }
-        if (rest.avgCost != null) patch.avgCost = D(rest.avgCost as number);
-        const row = await db.material.update({ where: { id }, data: patch as never });
+        const row = await db.material.update({
+          where: { id }, omit: { purchasePrice: !financial, avgCost: !financial }, data: patch as never,
+        });
         return ok(ser(row));
       }
       break;

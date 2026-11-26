@@ -12,13 +12,13 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/hooks/use-toast";
 import { Plus, KeyRound, ShieldCheck, FileText, Globe } from "lucide-react";
+import { PERMISSIONS } from "@/lib/constants";
 
 type UserRow = { id: string; email: string; name: string; roleKey: string; isActive: boolean; lastLoginAt: string | null; twoFactorEnabled: boolean; phone: string | null };
 type RoleDef = { key: string; name: string; permissions?: string[]; isSystem?: boolean; id?: string };
 type AuditRow = { id: string; createdAt: string; userName: string | null; action: string; entity: string; refNo: string | null; reason: string | null };
 type DocRow = { id: string; code: string; category: string; fileName: string; size: number; createdAt: string; uploadedById: string | null };
 
-const PERMISSION_KEYS = ["view", "create", "edit", "approve", "post", "cancel", "reverse", "export", "manage_users", "view_financial", "manage_locations"];
 
 export function AdminView({ mode, can }: ViewProps & { mode: "admin-users" | "admin-settings" | "admin-audit" | "admin-docs" }) {
   return (
@@ -47,7 +47,7 @@ function UsersView({ can }: Pick<ViewProps, "can">) {
   return (
     <div className="space-y-4">
       <PageHeader title="Users & Roles"
-        description="Role-based access control. Owner can create custom roles. Location assignments are informational until warehouse-level access controls are configured."
+        description="Manage user roles, workflow permissions and warehouse location assignments."
         actions={<Button size="sm" className="bg-violet-600 hover:bg-violet-700" onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4 mr-1" />Add User</Button>} />
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard title="Users" value={String(rows.length)} />
@@ -130,7 +130,7 @@ function NewRoleForm({ onSubmit }: { onSubmit: (data: { key: string; name: strin
       <div className="space-y-1.5">
         <Label>Permissions</Label>
         <div className="grid grid-cols-2 gap-1.5">
-          {PERMISSION_KEYS.map((p) => (
+          {PERMISSIONS.map((p) => (
             <label key={p} className="flex items-center gap-2 text-xs">
               <input type="checkbox" checked={perms.includes(p)} onChange={(e) => setPerms((s) => e.target.checked ? [...s, p] : s.filter((x) => x !== p))} />
               {statusLabel(p)}
@@ -146,10 +146,15 @@ function NewRoleForm({ onSubmit }: { onSubmit: (data: { key: string; name: strin
 function NewUserDialog({ roles, onClose }: { roles: RoleDef[]; onClose: (d: boolean) => void }) {
   const [form, setForm] = useState({ name: "", email: "", password: "", roleKey: "DATA_ENTRY", phone: "" });
   const [busy, setBusy] = useState(false);
+  const [locations, setLocations] = useState<{ id: string; name: string; isActive: boolean; type: string }[]>([]);
+  const [locationIds, setLocationIds] = useState<string[]>([]);
+  useEffect(() => {
+    api<typeof locations>("master/locations").then(rows => setLocations(rows.filter(row => row.isActive && row.type === "BUSINESS"))).catch(() => null);
+  }, []);
   const submit = async () => {
     setBusy(true);
     try {
-      await apiPost("admin/users/create", form);
+      await apiPost("admin/users/create", { ...form, locationIds });
       toast({ title: "User created", description: form.email });
       onClose(true);
     } catch (e) { toast({ title: (e as Error).message, variant: "destructive" }); }
@@ -168,6 +173,16 @@ function NewUserDialog({ roles, onClose }: { roles: RoleDef[]; onClose: (d: bool
               <SelectContent>{roles.map((r) => <SelectItem key={r.key} value={r.key}>{r.name}</SelectItem>)}</SelectContent></Select>
           </div>
           <div className="space-y-1"><Label>Phone</Label><Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+          <fieldset className="space-y-1">
+            <legend className="text-sm font-medium">Locations</legend>
+            {locations.map(location => (
+              <label key={location.id} className="flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={locationIds.includes(location.id)} onChange={event =>
+                  setLocationIds(ids => event.target.checked ? [...ids, location.id] : ids.filter(id => id !== location.id))} />
+                {location.name}
+              </label>
+            ))}
+          </fieldset>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>

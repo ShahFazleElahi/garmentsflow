@@ -4,20 +4,23 @@ import { NextRequest } from "next/server";
 import { D, N, allocateIntegers, nextDocNo, logAudit, logActivity, Tx } from "../core";
 import { generateMRP } from "../inventory";
 import { PLAN_STATUSES } from "@/lib/constants";
+import { can, scopedLocations, type AuthUser } from "../auth";
 
 // ───────────────────────── GET ─────────────────────────
 export async function handleGet(segments: string[], req: NextRequest) {
   const [resource, id] = segments;
   const auth = await requirePerm(req, "view");
   if ("error" in auth) return auth.error;
+  const access = planningAccess(auth.user);
 
   if (resource === "plans" && !id) {
     const rows = await db.productPlan.findMany({
+      omit: access.planCosts,
       include: {
         category: true, collection: true,
         colors: true, sizes: true,
-        variants: true,
-        batches: { include: { variants: true } },
+        variants: { omit: access.variantCosts },
+        batches: { omit: { estBudget: !access.financial }, include: { variants: true } },
         boms: { orderBy: { version: "desc" } },
         _count: { select: { designs: true } },
       },
@@ -30,45 +33,71 @@ export async function handleGet(segments: string[], req: NextRequest) {
     if (id === "detail") {
       const planId = q(req, "planId");
       if (!planId) return bad("planId is required");
-      return planDetail(planId);
+      return planDetail(planId, access);
     }
-    return planDetail(id);
+    return planDetail(id, access);
   }
 
   return bad(`Unknown planning resource: ${resource}`, 404);
 }
 
-async function planDetail(planId: string) {
+function planningAccess(user: AuthUser) {
+  const financial = can(user, "view_financial");
+  const locations = scopedLocations(user);
+  const planCosts = { estimatedBudget: !financial, targetMfgCost: !financial, targetLandedCost: !financial,
+    targetWholesalePrice: !financial, targetRetailPrice: !financial };
+  const variantCosts = { estMaterialCost: !financial, estServiceCost: !financial, targetPrice: !financial };
+  const workOrderCosts = { pricingJson: !financial, estServiceCost: !financial, transportCost: !financial,
+    advanceAmount: !financial, actualServiceCost: !financial, paidAmount: !financial, vendorInvoiceNo: !financial };
+  return { financial, locations, planCosts, variantCosts, workOrderCosts, audit: can(user, "manage_users") };
+}
+
+async function planDetail(planId: string, access: ReturnType<typeof planningAccess>) {
+  const { financial, locations, planCosts, variantCosts, workOrderCosts } = access;
+  const material = { omit: { purchasePrice: !financial, avgCost: !financial } };
+  const warehouse = locations ? { locationId: { in: locations } } : undefined;
+  const shipmentScope = locations ? { OR: [{ originLocationId: { in: locations } }, { destLocationId: { in: locations } }] } : {};
+  const shipmentCosts = { freightCharge: !financial, insuranceCharge: !financial, customsCharge: !financial,
+    importDuties: !financial, taxesCharge: !financial, docCharge: !financial, handlingCharge: !financial,
+    lastMileCharge: !financial, otherCharge: !financial, totalCost: !financial, totalCostBdt: !financial,
+    exchangeRate: !financial, paidAmount: !financial };
   const plan = await db.productPlan.findUnique({
     where: { id: planId },
+    omit: planCosts,
     include: {
       category: true, collection: true, colors: true, sizes: true, matrix: true,
-      variants: { include: { cost: true } },
-      boms: { include: { items: { include: { material: true } } }, orderBy: { version: "desc" } },
-      materialRequirements: { include: { material: true } },
-      designs: { include: { samples: true } },
-      batches: { include: { variants: true, workOrders: true } },
-      purchaseOrders: { include: { supplier: true, items: { include: { material: true } } } },
+      variants: { omit: variantCosts, include: { cost: financial } },
+      boms: { include: { items: { omit: { estUnitCost: !financial }, include: { material, color: { select: { name: true } } } } }, orderBy: { version: "desc" } },
+      materialRequirements: { omit: { estCost: !financial }, include: { material } },
+      designs: { include: { samples: { omit: { materialsCost: !financial, factoryCharge: !financial, tailorCharge: !financial, transportCost: !financial, totalCost: !financial } } } },
+      batches: { omit: { estBudget: !financial }, include: { variants: true, workOrders: { omit: workOrderCosts } } },
+      purchaseOrders: financial ? { include: { supplier: true, items: { include: { material: true } } } } : false,
       measurementCharts: true,
-      plans: true,
+      plans: access.audit,
     },
   });
   if (!plan) return bad("Plan not found", 404);
-  const [issues, inspections, finishedStocks, packages, shipmentsLocal, shipmentsIntl, expenses, budgetItems] = await Promise.all([
-    db.workOrderMaterial.findMany({ where: { workOrder: { planId } }, include: { material: true, workOrder: true } }),
+  const visibleWarehouses = warehouse
+    ? (await db.warehouse.findMany({ where: warehouse, select: { id: true } })).map(row => row.id)
+    : undefined;
+  const relatedShipments = { packages: { some: { package: { items: { some: { variant: { planId } } } } } }, ...shipmentScope };
+  const [issues, inspections, finishedStocks, packages, shipmentsLocal, shipmentsIntl, expenses, payments, salesItems, costEntries, activities, auditLogs] = await Promise.all([
+    db.workOrderMaterial.findMany({ where: { workOrder: { planId } }, include: { material, workOrder: { omit: workOrderCosts } } }),
     db.qualityInspection.findMany({ where: { planId }, orderBy: { inspectionDate: "desc" } }),
-    db.finishedStock.findMany({ where: { variant: { planId } }, include: { warehouse: true, variant: true } }),
-    db.package.findMany({ where: { items: { some: { variant: { planId } } } }, include: { items: { include: { variant: true } } } }),
-    db.shipment.findMany({ where: { type: "LOCAL", packages: { some: { package: { items: { some: { variant: { planId } } } } } } }, include: { packages: { include: { package: true } } } }),
-    db.shipment.findMany({ where: { type: "INTERNATIONAL", packages: { some: { package: { items: { some: { variant: { planId } } } } } } }, include: { packages: { include: { package: true } }, landedCosts: true } }),
-    db.expense.findMany({ where: { planId }, orderBy: { date: "desc" } }),
-    db.expense.findMany({ where: { planId }, orderBy: { date: "desc" } }),
+    db.finishedStock.findMany({ where: { variant: { planId }, warehouse }, omit: { unitCost: !financial }, include: { warehouse: true, variant: { omit: variantCosts } } }),
+    db.package.findMany({ where: { sourceWarehouseId: visibleWarehouses ? { in: visibleWarehouses } : undefined, items: { some: { variant: { planId } } } },
+      omit: { packagingCost: !financial }, include: { items: { where: { variant: { planId } }, omit: { unitCost: !financial }, include: { variant: { omit: variantCosts } } } } }),
+    db.shipment.findMany({ where: { type: "LOCAL", ...relatedShipments }, omit: shipmentCosts,
+      include: { packages: { include: { package: { omit: { packagingCost: !financial } } } } } }),
+    db.shipment.findMany({ where: { type: "INTERNATIONAL", ...relatedShipments }, omit: shipmentCosts,
+      include: { packages: { include: { package: { omit: { packagingCost: !financial } } } }, landedCosts: financial } }),
+    financial ? db.expense.findMany({ where: { planId }, orderBy: { date: "desc" } }) : [],
+    financial ? db.vendorInvoice.findMany({ where: { OR: [{ po: { planId } }, { workOrderId: { in: plan.batches.flatMap(b => b.workOrders.map(w => w.id)) } }] } }) : [],
+    financial ? db.salesInvoiceItem.findMany({ where: { variant: { planId }, invoice: locations ? { locationId: { in: locations } } : undefined }, include: { invoice: { include: { customer: true } } } }) : [],
+    financial ? db.costEntry.findMany({ where: { variant: { planId } }, orderBy: { date: "asc" } }) : [],
+    financial ? db.activityEvent.findMany({ where: { OR: [{ planId }, { batchId: { in: plan.batches.map(b => b.id) } }] }, orderBy: { date: "desc" }, take: 200 }) : [],
+    access.audit ? db.auditLog.findMany({ where: { OR: [{ entityId: planId }, { refNo: plan.code }] }, orderBy: { createdAt: "desc" }, take: 50 }) : [],
   ]);
-  const payments = await db.vendorInvoice.findMany({ where: { OR: [{ po: { planId } }, { workOrderId: { in: plan.batches.flatMap((b) => b.workOrders.map((w) => w.id)) } }] } });
-  const salesItems = await db.salesInvoiceItem.findMany({ where: { variant: { planId } }, include: { invoice: { include: { customer: true } } } });
-  const costEntries = await db.costEntry.findMany({ where: { variant: { planId } }, orderBy: { date: "asc" } });
-  const activities = await db.activityEvent.findMany({ where: { OR: [{ planId }, { batchId: { in: plan.batches.map((b) => b.id) } }] }, orderBy: { date: "desc" }, take: 200 });
-  const auditLogs = await db.auditLog.findMany({ where: { OR: [{ entityId: planId }, { refNo: { startsWith: plan.code.split("-").slice(0, 2).join("-") } }] }, orderBy: { createdAt: "desc" }, take: 50 });
   return ok(ser({ plan: { ...plan, requirements: plan.materialRequirements }, issues, inspections, finishedStocks, packages, shipmentsLocal, shipmentsIntl, expenses, payments, salesItems, costEntries, activities, auditLogs }));
 }
 
@@ -134,102 +163,179 @@ export async function handlePost(segments: string[], body: Record<string, unknow
         const plan = await db.productPlan.update({ where: { id }, data: patch as never });
         return ok(ser(plan));
       }
-      case "colors": {
-        const planId = String(body.planId);
-        const colors = (body.colors ?? []) as { id?: string; name: string; hex?: string; fabricShade?: string; dyeLot?: string; active?: boolean }[];
-        if (await db.productVariant.count({ where: { planId } })) return bad("Cannot replace colors after variants have been generated", 409);
-        await db.matrixCell.deleteMany({ where: { planId } });
-        await db.planColor.deleteMany({ where: { planId } });
-        const created: unknown[] = [];
-        for (const c of colors) {
-          created.push(await db.planColor.create({ data: { planId, name: c.name, hex: c.hex ?? "#334155", fabricShade: c.fabricShade, dyeLot: c.dyeLot, active: c.active ?? true } }));
-        }
-        return ok(ser(created));
-      }
+      case "colors":
       case "sizes": {
-        const planId = String(body.planId);
-        const sizes = (body.sizes ?? []) as { id?: string; name: string; measurements?: unknown; active?: boolean }[];
-        if (await db.productVariant.count({ where: { planId } })) return bad("Cannot replace sizes after variants have been generated", 409);
-        await db.matrixCell.deleteMany({ where: { planId } });
-        await db.planSize.deleteMany({ where: { planId } });
-        const created: unknown[] = [];
-        for (const s of sizes) {
-          created.push(await db.planSize.create({ data: { planId, name: s.name, measurementsJson: s.measurements ? JSON.stringify(s.measurements) : undefined, active: s.active ?? true } }));
+        try {
+          const planId = String(body.planId);
+          const names = body[action] as { name: string; hex?: string; fabricShade?: string; dyeLot?: string;
+            measurements?: unknown; active?: boolean }[];
+          if (!Array.isArray(names) || !names.length || names.some(row => typeof row?.name !== "string" || !row.name.trim()) ||
+              new Set(names.map(row => row.name.trim().toLowerCase())).size !== names.length) {
+            return bad("Distinct names are required");
+          }
+          const result = await db.$transaction(async tx => {
+            await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${planId} FOR UPDATE`;
+            const plan = await tx.productPlan.findUniqueOrThrow({
+              where: { id: planId }, include: { _count: { select: { variants: true, batches: true } } },
+            });
+            if (plan.approvedAt || plan._count.variants || plan._count.batches ||
+                (action === "colors" && await tx.bOMItem.count({ where: { bom: { planId }, colorId: { not: null } } }))) {
+              throw new Error("Existing variants, batches or BOM allocations protect this matrix dimension");
+            }
+            await tx.matrixCell.deleteMany({ where: { planId } });
+            if (action === "colors") {
+              await tx.planColor.deleteMany({ where: { planId } });
+              return tx.planColor.createManyAndReturn({ data: names.map(row => ({
+                planId, name: row.name.trim(), hex: row.hex ?? "#334155", fabricShade: row.fabricShade,
+                dyeLot: row.dyeLot, active: row.active ?? true,
+              })) });
+            }
+            await tx.planSize.deleteMany({ where: { planId } });
+            return tx.planSize.createManyAndReturn({ data: names.map(row => ({
+              planId, name: row.name.trim(), measurementsJson: row.measurements ? JSON.stringify(row.measurements) : undefined,
+              active: row.active ?? true,
+            })) });
+          });
+          return ok(ser(result));
+        } catch (error) {
+          return bad((error as Error).message, 409);
         }
-        return ok(ser(created));
       }
       case "matrix": {
-        const planId = String(body.planId);
-        const cells = (body.cells ?? []) as { colorId: string; sizeId: string; qty: number; enabled?: boolean }[];
-        const plan = await db.productPlan.findUnique({ where: { id: planId }, include: { colors: true, sizes: true } });
-        if (!plan) return bad("Plan not found", 404);
-        await db.$transaction(async (tx) => {
-          await tx.matrixCell.deleteMany({ where: { planId } });
-          for (const c of cells) {
-            if (!plan.colors.some(x => x.id === c.colorId && x.active) || !plan.sizes.some(x => x.id === c.sizeId && x.active)) throw new Error("Invalid matrix color or size");
-            if (c.qty < 0 || !Number.isInteger(c.qty)) throw new Error("Matrix quantities must be non-negative integers");
-            await tx.matrixCell.create({ data: { planId, colorId: c.colorId, sizeId: c.sizeId, qty: c.qty, enabled: c.enabled ?? true } });
+        try {
+          const planId = String(body.planId);
+          const cells = body.cells as { colorId: string; sizeId: string; qty: number; enabled?: boolean }[];
+          if (!Array.isArray(cells) || !cells.length || cells.some(cell => !cell || typeof cell.colorId !== "string" ||
+              typeof cell.sizeId !== "string" || !Number.isSafeInteger(cell.qty) || cell.qty < 0) ||
+              new Set(cells.map(cell => `${cell.colorId}:${cell.sizeId}`)).size !== cells.length) {
+            return bad("Matrix requires distinct color and size pairs with non-negative whole quantities");
           }
-          const total = cells.filter(c => c.enabled !== false).reduce((a, c) => a + c.qty, 0);
-          await logActivity(tx, { module: "PLANNING", action: "matrix_updated", description: `Production matrix updated — allocated ${total} of planned quantity`, userName: user.name, planId });
-        });
-        return ok({ saved: true, total: cells.filter(c => c.enabled !== false).reduce((a, c) => a + c.qty, 0) });
+          const total = cells.filter(cell => cell.enabled !== false).reduce((sum, cell) => sum + cell.qty, 0);
+          await db.$transaction(async tx => {
+            await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${planId} FOR UPDATE`;
+            const plan = await tx.productPlan.findUniqueOrThrow({
+              where: { id: planId }, include: { colors: true, sizes: true, _count: { select: { batches: true } } },
+            });
+            if (plan.approvedAt || plan._count.batches) throw new Error("Approved or batched plans protect their matrix");
+            const colors = new Set(plan.colors.filter(row => row.active).map(row => row.id));
+            const sizes = new Set(plan.sizes.filter(row => row.active).map(row => row.id));
+            if (cells.some(cell => !colors.has(cell.colorId) || !sizes.has(cell.sizeId))) throw new Error("Invalid matrix color or size");
+            if (total > plan.plannedQty) throw new Error("Matrix allocation exceeds plan quantity");
+            await tx.matrixCell.deleteMany({ where: { planId } });
+            await tx.matrixCell.createMany({ data: cells.map(cell => ({
+              planId, colorId: cell.colorId, sizeId: cell.sizeId, qty: cell.qty, enabled: cell.enabled ?? true,
+            })) });
+            await logActivity(tx, { module: "PLANNING", action: "matrix_updated", description: `Production matrix updated — allocated ${total} of planned quantity`, userName: user.name, planId });
+          });
+          return ok({ saved: true, total });
+        } catch (error) {
+          return bad((error as Error).message);
+        }
       }
       case "generate-variants": {
-        const planId = String(body.planId);
-        const result = await db.$transaction(async (tx) => {
-          const plan = await tx.productPlan.findUnique({ where: { id: planId }, include: { colors: true, sizes: true, matrix: true } });
-          if (!plan) throw new Error("Plan not found");
-          const cells = plan.matrix.filter((m) => m.enabled && m.qty > 0);
-          if (cells.length === 0) throw new Error("No allocated matrix cells with quantity");
-          // SKU: PRD-0001-BLK-XL (color/size tokens)
-          const token = (s: string) => s.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "GEN";
-          const existing = await tx.productVariant.findMany({ where: { planId } });
-          const existingByKey = new Map(existing.map((v) => [`${v.colorId}:${v.sizeId}`, v]));
-          let seqNum = existing.length;
-          const barcodes: string[] = [];
-          for (const cell of cells) {
-            const color = plan.colors.find((c) => c.id === cell.colorId)!;
-            const size = plan.sizes.find((s) => s.id === cell.sizeId)!;
-            const key = `${cell.colorId}:${cell.sizeId}`;
-            const existingVariant = existingByKey.get(key);
-            if (existingVariant) {
-              // preserve SKU — same approved variant reproduced
-              await tx.productVariant.update({ where: { id: existingVariant.id }, data: { plannedQty: cell.qty } });
-              continue;
+        try {
+          const planId = String(body.planId);
+          const result = await db.$transaction(async (tx) => {
+            await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${planId} FOR UPDATE`;
+            const plan = await tx.productPlan.findUnique({ where: { id: planId }, include: { colors: true, sizes: true,
+              matrix: { orderBy: [{ colorId: "asc" }, { sizeId: "asc" }] }, _count: { select: { batches: true } } } });
+            if (!plan) throw new Error("Plan not found");
+            if (plan.approvedAt || plan._count.batches) throw new Error("Approved or batched plans protect their variants");
+            const cells = plan.matrix.filter((m) => m.enabled && m.qty > 0);
+            if (cells.length === 0) throw new Error("No allocated matrix cells with quantity");
+            // SKU: PRD-0001-BLK-XL (color/size tokens)
+            const token = (s: string) => s.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "GEN";
+            const existing = await tx.productVariant.findMany({ where: { planId } });
+            const existingByKey = new Map(existing.map((v) => [`${v.colorId}:${v.sizeId}`, v]));
+            const skus = new Set(existing.map(row => row.sku));
+            for (const cell of cells) {
+              const color = plan.colors.find((c) => c.id === cell.colorId)!;
+              const size = plan.sizes.find((s) => s.id === cell.sizeId)!;
+              const key = `${cell.colorId}:${cell.sizeId}`;
+              const existingVariant = existingByKey.get(key);
+              if (existingVariant) {
+                // preserve SKU — same approved variant reproduced
+                await tx.productVariant.update({ where: { id: existingVariant.id }, data: { plannedQty: cell.qty } });
+                continue;
+              }
+              const baseSku = `${plan.code}-${token(color.name)}-${token(size.name)}`;
+              let sku = baseSku;
+              for (let suffix = 2; skus.has(sku); suffix++) sku = `${baseSku}-${suffix}`;
+              skus.add(sku);
+              const barcode = `GF-${plan.code}-${cell.colorId}-${cell.sizeId}`;
+              await tx.productVariant.create({
+                data: {
+                  planId, sku, colorId: cell.colorId, sizeId: cell.sizeId, colorName: color.name, sizeName: size.name,
+                  barcode, qrPayload: JSON.stringify({ t: "variant", sku }), plannedQty: cell.qty,
+                },
+              });
             }
-            seqNum += 1;
-            const sku = `${plan.code}-${token(color.name)}-${token(size.name)}`;
-            const barcode = `GF-${plan.code}-${cell.colorId}-${cell.sizeId}`;
-            barcodes.push(sku);
-            await tx.productVariant.create({
-              data: {
-                planId, sku, colorId: cell.colorId, sizeId: cell.sizeId, colorName: color.name, sizeName: size.name,
-                barcode, qrPayload: JSON.stringify({ t: "variant", sku }), plannedQty: cell.qty,
-              },
-            });
-          }
-          // remove variants no longer in matrix (only when no stock/batch movement)
-          const keepKeys = new Set(cells.map((c) => `${c.colorId}:${c.sizeId}`));
-          for (const v of existing) {
-            if (!keepKeys.has(`${v.colorId}:${v.sizeId}`)) {
-              const hasBatch = await tx.batchVariant.count({ where: { variantId: v.id } });
-              const hasStock = await tx.finishedStock.count({ where: { variantId: v.id, qty: { gt: 0 } } });
-              if (!hasBatch && !hasStock) await tx.productVariant.delete({ where: { id: v.id } });
+            // remove variants no longer in matrix (only when no stock/batch movement)
+            const keepKeys = new Set(cells.map((c) => `${c.colorId}:${c.sizeId}`));
+            for (const v of existing) {
+              if (!keepKeys.has(`${v.colorId}:${v.sizeId}`)) {
+                const hasBatch = await tx.batchVariant.count({ where: { variantId: v.id } });
+                const hasStock = await tx.finishedStock.count({ where: { variantId: v.id, qty: { gt: 0 } } });
+                if (!hasBatch && !hasStock) await tx.productVariant.delete({ where: { id: v.id } });
+              }
             }
-          }
-          await tx.productPlan.update({ where: { id: planId }, data: { status: "VARIANT_CONFIGURATION" } });
-          await logActivity(tx, { module: "PLANNING", action: "variants_generated", description: `Variants generated for ${plan.code}`, userName: user.name, planId });
-          return { generated: true };
-        });
-        return ok(result);
+            await tx.productPlan.update({ where: { id: planId }, data: { status: "VARIANT_CONFIGURATION" } });
+            await logActivity(tx, { module: "PLANNING", action: "variants_generated", description: `Variants generated for ${plan.code}`, userName: user.name, planId });
+            return { generated: true };
+          });
+          return ok(result);
+        } catch (error) {
+          return bad((error as Error).message);
+        }
       }
       case "status": {
         if (!PLAN_STATUSES.includes(body.status as typeof PLAN_STATUSES[number])) return bad("Unknown plan status");
         if (body.status === "APPROVED") return bad("Use the approval action to validate the matrix");
-        if (["PROCUREMENT_IN_PROGRESS", "READY_FOR_PRODUCTION", "IN_PRODUCTION", "PARTIALLY_COMPLETED", "COMPLETED"].includes(String(body.status))) {
-          const existing = await db.productPlan.findUnique({ where: { id: String(body.id) } });
-          if (!existing?.approvedAt) return bad("Approve the plan first", 409);
+        const existing = await db.productPlan.findUnique({
+          where: { id: String(body.id) },
+          include: {
+            _count: { select: { batches: true } },
+          },
+        });
+
+        if (!existing) return bad("Plan not found", 404);
+
+        const requestedStatus = String(body.status);
+
+        if (requestedStatus === existing.status) {
+          return ok(ser(existing));
+        }
+
+        if ([
+          "IN_PRODUCTION",
+          "PARTIALLY_COMPLETED",
+          "COMPLETED",
+        ].includes(requestedStatus)) {
+          return bad(
+            "Production status is managed automatically by production and quality control",
+            409
+          );
+        }
+
+        if (
+          existing._count.batches > 0 ||
+          ["IN_PRODUCTION", "PARTIALLY_COMPLETED", "COMPLETED"].includes(
+            existing.status
+          )
+        ) {
+          return bad(
+            "An active production plan cannot be manually moved to another status",
+            409
+          );
+        }
+
+        if (
+          ["PROCUREMENT_IN_PROGRESS", "READY_FOR_PRODUCTION"].includes(
+            requestedStatus
+          ) &&
+          !existing.approvedAt
+        ) {
+          return bad("Approve the plan first", 409);
         }
         const plan = await db.productPlan.update({
           where: { id: String(body.id) },
@@ -241,8 +347,14 @@ export async function handlePost(segments: string[], body: Record<string, unknow
       case "approve": {
         try {
           const result = await db.$transaction(async (tx) => {
-            const plan = await tx.productPlan.findUnique({ where: { id: String(body.id) }, include: { matrix: true, variants: true } });
+            const id = String(body.id);
+            await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${id} FOR UPDATE`;
+            const plan = await tx.productPlan.findUnique({ where: { id }, include: { matrix: true, variants: true, _count: { select: { batches: true } } } });
             if (!plan) throw new Error("Plan not found");
+            if (plan.status === "APPROVED") return plan;
+            if (plan.approvedAt || plan._count.batches || ["IN_PRODUCTION", "PARTIALLY_COMPLETED", "COMPLETED", "CANCELLED"].includes(plan.status)) {
+              throw new Error("Approval cannot restart an existing production workflow");
+            }
             const allocated = plan.matrix.filter((m) => m.enabled).reduce((a, m) => a + m.qty, 0);
             if (plan.plannedQty <= 0 || allocated !== plan.plannedQty) {
               throw new Error(`Cannot approve: allocated quantity (${allocated}) must equal planned quantity (${plan.plannedQty})`);
@@ -267,9 +379,14 @@ export async function handlePost(segments: string[], body: Record<string, unknow
       case "revise": {
         try {
           const result = await db.$transaction(async (tx) => {
-            const plan = await tx.productPlan.findUnique({ where: { id: String(body.id) }, include: { colors: true, sizes: true, matrix: true, variants: true } });
+            const id = String(body.id);
+            await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${id} FOR UPDATE`;
+            const plan = await tx.productPlan.findUnique({ where: { id }, include: { colors: true, sizes: true, matrix: true, variants: true,
+              _count: { select: { batches: true } } } });
             if (!plan) throw new Error("Plan not found");
-            const activeBatches = await tx.productionBatch.count({ where: { planId: plan.id, status: { in: ["IN_PROGRESS", "MATERIAL_RESERVED", "PARTIAL"] } } });
+            if (plan._count.batches) throw new Error("Revising a batched plan requires production reconciliation");
+            const plannedQty = Number(body.plannedQty ?? plan.plannedQty);
+            if (!Number.isSafeInteger(plannedQty) || plannedQty <= 0) throw new Error("Revised quantity must be a positive integer");
             const snapshot = { plannedQty: plan.plannedQty, colors: plan.colors.length, sizes: plan.sizes.length, matrix: plan.matrix.map((m) => ({ colorId: m.colorId, sizeId: m.sizeId, qty: m.qty })) };
             await tx.planVersion.create({
               data: {
@@ -280,10 +397,10 @@ export async function handlePost(segments: string[], body: Record<string, unknow
             const newVersion = plan.version + 1;
             const updated = await tx.productPlan.update({
               where: { id: plan.id },
-              data: { version: newVersion, status: "BUDGET_PLANNING", approvedAt: null, approvedById: null, plannedQty: Number(body.plannedQty ?? plan.plannedQty) },
+              data: { version: newVersion, status: "BUDGET_PLANNING", approvedAt: null, approvedById: null, plannedQty },
             });
             await logAudit(tx, { userId: user.id, userName: user.name, action: "REVISE", entity: "ProductPlan", entityId: plan.id, refNo: plan.code, prevJson: snapshot, newJson: { version: newVersion, plannedQty: updated.plannedQty }, reason: String(body.reason ?? "") });
-            await logActivity(tx, { module: "PLANNING", action: "plan_revised", description: `Plan ${plan.code} revised to v${newVersion}${activeBatches ? ` — ${activeBatches} active batch(es) unaffected` : ""}`, userName: user.name, planId: plan.id, refNo: plan.code });
+            await logActivity(tx, { module: "PLANNING", action: "plan_revised", description: `Plan ${plan.code} revised to v${newVersion}`, userName: user.name, planId: plan.id, refNo: plan.code });
             return updated;
           });
           return ok(ser(result));
@@ -350,55 +467,81 @@ export async function handlePost(segments: string[], body: Record<string, unknow
         return ok(ser(chart));
       }
       case "bom": {
-        const planId = String(body.planId);
-        const result = await db.$transaction(async (tx) => {
-          const plan = await tx.productPlan.findUnique({ where: { id: planId }, include: { boms: true } });
-          if (!plan) throw new Error("Plan not found");
-          const approved = plan.boms.find((b) => b.status === "APPROVED");
-          // editing an approved BOM creates a new version
-          let bom = plan.boms.sort((a, b) => b.version - a.version)[0];
-          if (bom && bom.status === "APPROVED") {
-            bom = await tx.bOM.create({ data: { planId, version: bom.version + 1, status: "DRAFT", notes: `Revised from v${bom.version}` } });
-          } else if (!bom) {
-            bom = await tx.bOM.create({ data: { planId, version: 1, status: "DRAFT" } });
-          }
-          await tx.bOMItem.deleteMany({ where: { bomId: bom.id } });
-          const items = (body.items ?? []) as { materialId: string; component?: string; qtyPerPiece: number; wastagePct?: number; estUnitCost?: number; sizeOverrides?: Record<string, number>; supplierId?: string }[];
-          for (const it of items) {
-            await tx.bOMItem.create({
-              data: {
-                bomId: bom.id, materialId: it.materialId, component: it.component ?? "MAIN",
-                qtyPerPiece: D(it.qtyPerPiece), wastagePct: D(it.wastagePct ?? 0),
-                estUnitCost: D(it.estUnitCost ?? 0),
-                sizeOverridesJson: it.sizeOverrides && Object.keys(it.sizeOverrides).length ? JSON.stringify(it.sizeOverrides) : undefined,
-                supplierId: it.supplierId || null,
-              },
-            });
-          }
-          // estimated material cost per variant
-          const variants = await tx.productVariant.findMany({ where: { planId } });
-          for (const v of variants) {
-            let estCost = 0;
-            for (const it of items) {
-              let per = it.qtyPerPiece;
-              if (it.sizeOverrides && it.sizeOverrides[v.sizeName] != null) per = it.sizeOverrides[v.sizeName];
-              estCost += per * (1 + (it.wastagePct ?? 0) / 100) * Number(it.estUnitCost ?? 0);
+        try {
+          const planId = String(body.planId);
+          const result = await db.$transaction(async (tx) => {
+            await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${planId} FOR UPDATE`;
+            const plan = await tx.productPlan.findUnique({ where: { id: planId }, include: { boms: true, colors: true } });
+            if (!plan) throw new Error("Plan not found");
+            if (plan.approvedAt) throw new Error("Revise the product plan before editing its BOM");
+            const items = body.items as { materialId: string; colorId?: string; component?: string; qtyPerPiece: number; wastagePct?: number; estUnitCost?: number; sizeOverrides?: Record<string, number>; supplierId?: string }[];
+            const colors = new Set(plan.colors.filter(c => c.active).map(c => c.id));
+            const nonNegative = (value: number) => Number.isFinite(value) && value >= 0;
+            if (!Array.isArray(items) || !items.length || items.some(item => !item || !item.materialId ||
+              (item.colorId != null && !colors.has(item.colorId)) || !nonNegative(item.qtyPerPiece) ||
+              !nonNegative(item.wastagePct ?? 0) || !nonNegative(item.estUnitCost ?? 0) ||
+              (item.sizeOverrides != null && (typeof item.sizeOverrides !== "object" || Array.isArray(item.sizeOverrides) ||
+                Object.values(item.sizeOverrides).some(value => !nonNegative(value)))))) {
+              throw new Error("BOM requires valid materials, plan colors and non-negative quantities and costs");
             }
-            await tx.productVariant.update({ where: { id: v.id }, data: { estMaterialCost: D(Math.round(estCost * 100) / 100) } });
-          }
-          await logActivity(tx, { module: "PLANNING", action: "bom_saved", description: `BOM v${bom.version} saved (${items.length} items) for ${plan.code}`, userName: user.name, planId, refNo: plan.code });
-          return { bomId: bom.id, version: bom.version, items: items.length };
-        });
-        return ok(result);
+            // editing an approved BOM creates a new version
+            let bom = plan.boms.sort((a, b) => b.version - a.version)[0];
+            if (bom && bom.status === "APPROVED") {
+              bom = await tx.bOM.create({ data: { planId, version: bom.version + 1, status: "DRAFT", notes: `Revised from v${bom.version}` } });
+            } else if (!bom) {
+              bom = await tx.bOM.create({ data: { planId, version: 1, status: "DRAFT" } });
+            }
+            await tx.bOMItem.deleteMany({ where: { bomId: bom.id } });
+            for (const it of items) {
+              await tx.bOMItem.create({
+                data: {
+                  bomId: bom.id, materialId: it.materialId, colorId: it.colorId ?? null, component: it.component ?? "MAIN",
+                  qtyPerPiece: D(it.qtyPerPiece), wastagePct: D(it.wastagePct ?? 0),
+                  estUnitCost: D(it.estUnitCost ?? 0),
+                  sizeOverridesJson: it.sizeOverrides && Object.keys(it.sizeOverrides).length ? JSON.stringify(it.sizeOverrides) : undefined,
+                  supplierId: it.supplierId || null,
+                },
+              });
+            }
+            // estimated material cost per variant
+            const variants = await tx.productVariant.findMany({ where: { planId } });
+            for (const v of variants) {
+              let estCost = D(0);
+              for (const it of items) {
+                if (it.colorId && it.colorId !== v.colorId) continue;
+                let per = it.qtyPerPiece;
+                if (it.sizeOverrides && it.sizeOverrides[v.sizeName] != null) per = it.sizeOverrides[v.sizeName];
+                estCost = estCost.add(D(per).mul(D(1).add(D(it.wastagePct).div(100))).mul(D(it.estUnitCost)));
+              }
+              await tx.productVariant.update({ where: { id: v.id }, data: { estMaterialCost: estCost.toDecimalPlaces(2) } });
+            }
+            await logActivity(tx, { module: "PLANNING", action: "bom_saved", description: `BOM v${bom.version} saved (${items.length} items) for ${plan.code}`, userName: user.name, planId, refNo: plan.code });
+            return { bomId: bom.id, version: bom.version, items: items.length };
+          });
+          return ok(result);
+        } catch (error) {
+          return bad((error as Error).message);
+        }
       }
       case "bom-approve": {
-        const result = await db.$transaction(async (tx) => {
-          const bom = await tx.bOM.update({ where: { id: String(body.id) }, data: { status: "APPROVED", approvedAt: new Date() } });
-          await tx.productPlan.update({ where: { id: bom.planId }, data: { status: "MATERIAL_PLANNING" } });
-          await logActivity(tx, { module: "PLANNING", action: "bom_approved", description: `BOM v${bom.version} approved`, userName: user.name, planId: bom.planId });
-          return bom;
-        });
-        return ok(ser(result));
+        try {
+          const result = await db.$transaction(async (tx) => {
+            const id = String(body.id);
+            const candidate = await tx.bOM.findUniqueOrThrow({ where: { id } });
+            await tx.$queryRaw`SELECT "id" FROM "ProductPlan" WHERE "id" = ${candidate.planId} FOR UPDATE`;
+            const latest = await tx.bOM.findFirstOrThrow({ where: { planId: candidate.planId }, orderBy: { version: "desc" }, include: { _count: { select: { items: true } }, plan: true } });
+            if (latest.id !== id || !latest._count.items) throw new Error("Only the latest nonempty BOM can be approved");
+            if (latest.status === "APPROVED") return latest;
+            if (latest.status !== "DRAFT" || latest.plan.approvedAt) throw new Error("Revise the product plan before approving a new BOM");
+            const bom = await tx.bOM.update({ where: { id }, data: { status: "APPROVED", approvedAt: new Date() } });
+            await tx.productPlan.update({ where: { id: bom.planId }, data: { status: "MATERIAL_PLANNING" } });
+            await logActivity(tx, { module: "PLANNING", action: "bom_approved", description: `BOM v${bom.version} approved`, userName: user.name, planId: bom.planId });
+            return bom;
+          });
+          return ok(ser(result));
+        } catch (error) {
+          return bad((error as Error).message);
+        }
       }
       case "mrp": {
         try {

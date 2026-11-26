@@ -15,7 +15,7 @@ export async function recomputeVariantCosts(tx: Tx, variantIds: string[]) {
   if (variantIds.length === 0) return;
   const entries = await tx.costEntry.findMany({ where: { variantId: { in: variantIds } } });
   const serviceCats = new Set(["EMBROIDERY", "TAILORING", "CUTTING", "PRINTING", "WASHING", "FINISHING", "REWORK"]);
-  const transportCats = new Set(["TRANSPORT", "LOCAL_SHIPMENT"]);
+  const transportCats = new Set(["TRANSPORT", "LOCAL_SHIPMENT", "VENDOR_TRANSPORT"]);
   const otherCats = new Set(["PACKAGING", "INTL_FREIGHT", "CUSTOMS", "DUTIES", "INSURANCE", "OTHER"]);
 
   const agg = new Map<string, { material: Prisma.Decimal; service: Prisma.Decimal; transport: Prisma.Decimal; other: Prisma.Decimal }>();
@@ -30,9 +30,19 @@ export async function recomputeVariantCosts(tx: Tx, variantIds: string[]) {
     agg.set(e.variantId, cur);
   }
 
+  const existingCosts = await tx.variantCost.findMany({
+    where: {
+      variantId: { in: variantIds },
+    },
+  });
+
+  const existingByVariant = new Map(
+    existingCosts.map((row) => [row.variantId, row])
+  );
+
   for (const variantId of variantIds) {
     const a = agg.get(variantId) ?? { material: new Prisma.Decimal(0), service: new Prisma.Decimal(0), transport: new Prisma.Decimal(0), other: new Prisma.Decimal(0) };
-    const existing = await tx.variantCost.findUnique({ where: { variantId } });
+    const existing = existingByVariant.get(variantId);
     const mfg = a.material.add(a.service);
     const landed = mfg.add(a.transport).add(a.other);
     const data = {
@@ -57,16 +67,43 @@ export async function addCostEntries(
   tx: Tx,
   rows: { variantId: string; batchId?: string | null; category: string; amount: number | Prisma.Decimal; refType?: string; refId?: string; refNo?: string; date?: Date; note?: string }[]
 ) {
-  for (const r of rows) {
-    if (D(r.amount).isZero()) continue;
-    await tx.costEntry.create({
-      data: {
-        variantId: r.variantId, batchId: r.batchId ?? null, category: r.category,
-        amount: D(r.amount).toDecimalPlaces(4), refType: r.refType, refId: r.refId,
-        refNo: r.refNo, date: r.date ?? new Date(), note: r.note,
-      },
+  const affectedVariants = [...new Set(rows.map(r => r.variantId))];
+
+  const finalizedCosts = await tx.variantCost.count({
+    where: {
+      variantId: { in: affectedVariants },
+      finalized: true,
+    },
+  });
+
+  if (finalizedCosts > 0) {
+    throw new Error("Cannot add cost entries to finalized variants");
+  }
+
+  if (rows.some(r => !D(r.amount).isFinite())) {
+    throw new Error("Invalid variant cost amount");
+  }
+
+  const entries = rows
+    .filter((r) => !D(r.amount).isZero())
+    .map((r) => ({
+      variantId: r.variantId,
+      batchId: r.batchId ?? null,
+      category: r.category,
+      amount: D(r.amount).toDecimalPlaces(4),
+      refType: r.refType,
+      refId: r.refId,
+      refNo: r.refNo,
+      date: r.date ?? new Date(),
+      note: r.note,
+    }));
+
+  if (entries.length > 0) {
+    await tx.costEntry.createMany({
+      data: entries,
     });
   }
+
   await recomputeVariantCosts(tx, [...new Set(rows.map((r) => r.variantId))]);
 }
 
@@ -80,6 +117,18 @@ export async function finalizeVariantCosts(tx: Tx, planId: string, userId: strin
   if (openDiscrepancies > 0) {
     throw new Error(`Cannot finalize costs: ${openDiscrepancies} unresolved shipment discrepancy record(s) exist for this plan's variants`);
   }
+  if (!ids.length) {
+    throw new Error("No variants available for cost finalization");
+  }
+
+  const incomplete = variants.some(
+    variant => variant.producedQty !== variant.plannedQty
+  );
+
+  if (incomplete) {
+    throw new Error("Complete production before cost finalization");
+  }
+
   const now = new Date();
   for (const id of ids) {
     await tx.variantCost.upsert({

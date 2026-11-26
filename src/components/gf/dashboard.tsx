@@ -20,6 +20,7 @@ import {
 const COLORS = ["#7c3aed", "#10b981", "#f59e0b", "#3b82f6", "#ef4444", "#64748b", "#ec4899", "#14b8a6"];
 
 type Dash = {
+  operationalOnly?: boolean;
   kpis: Record<string, number>;
   charts: {
     pipeline: { status: string; qty: number }[];
@@ -70,6 +71,21 @@ export function DashboardView({ mode, navigate }: ViewProps & { mode: "exec" | "
           }
         />
         {ops ? <DailyOpsView ops={ops} /> : <p className="text-sm text-muted-foreground py-16 text-center">Loading…</p>}
+      </div>
+    );
+  }
+
+  if (data?.operationalOnly) {
+    return (
+      <div className="space-y-4">
+        <PageHeader title="Operations Dashboard" />
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <StatCard title="Raw Material Available" value={fmtNum(data.kpis.availableMaterial)} />
+          <StatCard title="Reserved Material" value={fmtNum(data.kpis.reservedMaterial)} />
+          <StatCard title="Finished Goods Available" value={fmtNum(data.kpis.finishedProducts)} />
+          <StatCard title="Packed Products" value={fmtNum(data.kpis.packedProducts)} />
+          <StatCard title="Shipments In Transit" value={fmtNum(data.kpis.inTransit)} />
+        </div>
       </div>
     );
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiPost, fmtMoney, fmtNum, fmtDate, statusLabel, idem } from "@/lib/gf-api";
 import { PageHeader, StatCard, StatusBadge, ErrorText, DataTable, type Column } from "./ui-bits";
 import type { ViewProps } from "./shell";
@@ -16,7 +16,7 @@ import { Plus, Trash2, PackageOpen, FileText, ShoppingCart } from "lucide-react"
 type PO = {
   id: string; code: string; type: string; status: string; orderDate: string; expectedDate: string | null;
   supplier: { id: string; name: string }; plan: { code: string; name: string } | null;
-  subtotal: number; transportCost: number; total: number; paidAmount: number; supplierInvoiceNo: string | null;
+  subtotal: number; transportCost: number; total: number; paidAmount: number; supplierInvoiceNo: string | null; warehouseId: string | null;
   items: { id: string; material: { id: string; name: string; sku: string; baseUnit: string }; qty: number; unitPrice: number; receivedQty: number }[];
   receipts: unknown[];
 };
@@ -249,29 +249,33 @@ function NewPODialog({ open, onClose, materials, suppliers, warehouses, plans }:
 
 function ReceiveDialog({ po, warehouses, onClose }: { po: PO; warehouses: Warehouse[]; onClose: (done: boolean) => void }) {
   const [lines, setLines] = useState(po.items.map((it) => ({ poItemId: it.id, materialId: it.material.name, qty: Number(it.qty) - Number(it.receivedQty), max: Number(it.qty) - Number(it.receivedQty), unitPrice: Number(it.unitPrice) })));
-  const [warehouseId, setWarehouseId] = useState(warehouses[0]?.id ?? "");
+  const [warehouseId, setWarehouseId] = useState(po.warehouseId ?? warehouses[0]?.id ?? "");
   const [transport, setTransport] = useState(0);
   const [invoiceNo, setInvoiceNo] = useState(po.supplierInvoiceNo ?? "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [idempotencyKey] = useState(idem);
+  const submitting = useRef(false);
 
   const value = lines.reduce((a, l) => a + l.qty * l.unitPrice, 0);
 
   const submit = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
       await apiPost(`procurement/orders/receive`, {
         poId: po.id, warehouseId,
         items: lines.filter((l) => l.qty > 0).map((l) => ({ poItemId: l.poItemId, materialId: po.items.find((x) => x.id === l.poItemId)?.material.id ?? "", qty: l.qty, unitPrice: l.unitPrice })),
-        transportCost: transport, supplierInvoiceNo: invoiceNo || undefined, idempotencyKey: idem(),
+        transportCost: transport, supplierInvoiceNo: invoiceNo || undefined, idempotencyKey,
       });
       toast({ title: "Materials received", description: `GRN posted — stock updated, ৳${Math.round(value + transport).toLocaleString()} invoiced` });
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+    <Dialog open onOpenChange={(o) => !o && !submitting.current && onClose(false)}>
       <DialogContent className="max-w-xl">
         <DialogHeader><DialogTitle>Receive Materials — {po.code}</DialogTitle><DialogDescription>Partial receiving supported. Transport cost is allocated into landed unit cost by value.</DialogDescription></DialogHeader>
         <ErrorText error={error} />
@@ -296,7 +300,7 @@ function ReceiveDialog({ po, warehouses, onClose }: { po: PO; warehouses: Wareho
           <div className="space-y-1"><Label>Receiving value</Label><p className="font-semibold h-9 flex items-center">{fmtMoney(value + transport)}</p></div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy} className="bg-emerald-600 hover:bg-emerald-700"><PackageOpen className="h-4 w-4 mr-1" />Post receiving</Button>
         </DialogFooter>
       </DialogContent>
@@ -312,6 +316,8 @@ function PayDialog({ po, onClose }: { po: PO; onClose: (done: boolean) => void }
   const [accounts, setAccounts] = useState<{ code: string; name: string; type: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [idempotencyKey] = useState(idem);
+  const submitting = useRef(false);
 
   useEffect(() => {
     api<Record<string, unknown>[]>("procurement/invoices").then((all) => {
@@ -326,16 +332,18 @@ function PayDialog({ po, onClose }: { po: PO; onClose: (done: boolean) => void }
   }, [po.id]);
 
   const submit = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
-      await apiPost("procurement/payments/pay", { invoiceId, amount, accountCode, method: "CASH", idempotencyKey: idem() });
+      await apiPost("procurement/payments/pay", { invoiceId, amount, accountCode, method: "CASH", idempotencyKey });
       toast({ title: "Payment posted", description: fmtMoney(amount) });
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+    <Dialog open onOpenChange={(o) => !o && !submitting.current && onClose(false)}>
       <DialogContent className="max-w-sm">
         <DialogHeader><DialogTitle>Pay Supplier — {po.supplier.name}</DialogTitle><DialogDescription>Paying an existing payable reduces the balance — no duplicate expense is created.</DialogDescription></DialogHeader>
         <ErrorText error={error} />
@@ -357,7 +365,7 @@ function PayDialog({ po, onClose }: { po: PO; onClose: (done: boolean) => void }
           </Select>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy || !invoiceId || amount <= 0}><FileText className="h-4 w-4 mr-1" />Post payment</Button>
         </DialogFooter>
       </DialogContent>

@@ -15,32 +15,33 @@ datasource db {
 // ─────────────────────────────────────────────────────────────
 
 model User {
-  id                String    @id @default(cuid())
-  email             String    @unique
-  passwordHash      String
-  name              String
-  phone             String?
-  roleKey           String    @default("READ_ONLY") // OWNER | ... custom role key
-  isActive          Boolean   @default(true)
-  twoFactorSecret   String?   // encrypted at rest
-  twoFactorEnabled  Boolean   @default(false)
-  recoveryCodes     String?   // JSON array of bcrypt hashes
-  failedLogins      Int       @default(0)
-  lockedUntil       DateTime?
-  lastLoginAt       DateTime?
-  lastTotpStep      BigInt?
-  createdById       String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  email            String    @unique
+  passwordHash     String
+  name             String
+  phone            String?
+  roleKey          String    @default("READ_ONLY") // OWNER | ... custom role key
+  isActive         Boolean   @default(true)
+  twoFactorSecret  String? // encrypted at rest
+  twoFactorEnabled Boolean   @default(false)
+  recoveryCodes    String? // JSON array of bcrypt hashes
+  failedLogins     Int       @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  lastTotpStep     BigInt?
+  createdById      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  sessions          Session[]
-  locations         UserLocation[]
+  sessions  Session[]
+  locations UserLocation[]
 }
 
 model AuthRateLimit {
-  key String @id
-  count Int @default(0)
+  key       String   @id
+  count     Int      @default(0)
   expiresAt DateTime
+
   @@index([expiresAt])
 }
 
@@ -59,12 +60,12 @@ model Session {
 }
 
 model Role {
-  id              String  @id @default(cuid())
-  key             String  @unique // e.g. OWNER, PROCUREMENT_MGR, CUSTOM_XYZ
+  id              String   @id @default(cuid())
+  key             String   @unique // e.g. OWNER, PROCUREMENT_MGR, CUSTOM_XYZ
   name            String
   description     String?
-  permissionsJson String  @default("[]") // JSON string[] of permission keys
-  isSystem        Boolean @default(false)
+  permissionsJson String   @default("[]") // JSON string[] of permission keys
+  isSystem        Boolean  @default(false)
   createdAt       DateTime @default(now())
 }
 
@@ -120,9 +121,9 @@ model ActivityEvent {
 // ─────────────────────────────────────────────────────────────
 
 model SystemSetting {
-  key        String   @id
-  valueJson  String
-  updatedAt  DateTime @updatedAt
+  key       String   @id
+  valueJson String
+  updatedAt DateTime @updatedAt
 }
 
 model NumberSequence {
@@ -136,18 +137,18 @@ model NumberSequence {
 // ─────────────────────────────────────────────────────────────
 
 model Location {
-  id        String   @id @default(cuid())
-  code      String   @unique
+  id        String           @id @default(cuid())
+  code      String           @unique
   name      String
-  country   String   @default("Bangladesh")
+  country   String           @default("Bangladesh")
   division  String?
   district  String?
-  timezone  String   @default("Asia/Dhaka")
-  type      String   @default("BUSINESS") // BUSINESS | VENDOR | TRANSIT
-  partnerId String? @unique // for VENDOR locations → virtual custody
+  timezone  String           @default("Asia/Dhaka")
+  type      String           @default("BUSINESS") // BUSINESS | VENDOR | TRANSIT
+  partnerId String?          @unique // for VENDOR locations → virtual custody
   partner   BusinessPartner? @relation(fields: [partnerId], references: [id])
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  isActive  Boolean          @default(true)
+  createdAt DateTime         @default(now())
 
   warehouses    Warehouse[]
   userLocations UserLocation[]
@@ -225,30 +226,30 @@ model BusinessPartner {
 // ─────────────────────────────────────────────────────────────
 
 model Collection {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   name       String
   season     String?
   launchDate DateTime?
-  status     String   @default("ACTIVE")
+  status     String    @default("ACTIVE")
   notes      String?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   plans ProductPlan[]
 }
 
 model ProductCategory {
-  id          String   @id @default(cuid())
-  name        String   @unique
+  id          String  @id @default(cuid())
+  name        String  @unique
   code        String
   description String?
-  isActive    Boolean  @default(true)
+  isActive    Boolean @default(true)
 
   plans ProductPlan[]
 }
 
 model ProductPlan {
-  id                   String    @id @default(cuid())
-  code                 String    @unique
+  id                   String           @id @default(cuid())
+  code                 String           @unique
   name                 String
   description          String?
   categoryId           String?
@@ -258,117 +259,118 @@ model ProductPlan {
   season               String?
   targetMarket         String?
   targetCustomer       String?
-  status               String    @default("DRAFT")
+  status               String           @default("DRAFT")
   // DRAFT | CONCEPT_DEVELOPMENT | DESIGN_DEVELOPMENT | SAMPLE_DEVELOPMENT | SAMPLE_APPROVED
   // | VARIANT_CONFIGURATION | MATERIAL_PLANNING | BUDGET_PLANNING | AWAITING_APPROVAL | APPROVED
   // | PROCUREMENT_IN_PROGRESS | READY_FOR_PRODUCTION | IN_PRODUCTION | PARTIALLY_COMPLETED
   // | COMPLETED | ON_HOLD | CANCELLED
-  unit                 String    @default("Piece")
-  plannedQty           Int       @default(0)
-  planningDate         DateTime  @default(now())
+  unit                 String           @default("Piece")
+  plannedQty           Int              @default(0)
+  planningDate         DateTime         @default(now())
   expectedStartDate    DateTime?
   targetCompletionDate DateTime?
-  estimatedBudget      Decimal   @default(0)
-  targetMfgCost        Decimal   @default(0)
-  targetLandedCost     Decimal   @default(0)
-  targetWholesalePrice Decimal   @default(0)
-  targetRetailPrice    Decimal   @default(0)
-  priority             String    @default("MEDIUM")
+  estimatedBudget      Decimal          @default(0)
+  targetMfgCost        Decimal          @default(0)
+  targetLandedCost     Decimal          @default(0)
+  targetWholesalePrice Decimal          @default(0)
+  targetRetailPrice    Decimal          @default(0)
+  priority             String           @default("MEDIUM")
   assignedTo           String?
   instructions         String?
   notes                String?
-  version              Int       @default(1)
-  isDemo               Boolean   @default(false)
+  version              Int              @default(1)
+  isDemo               Boolean          @default(false)
   approvedAt           DateTime?
   approvedById         String?
   createdById          String?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
-  colors    PlanColor[]
-  sizes     PlanSize[]
-  matrix    MatrixCell[]
-  variants  ProductVariant[]
-  boms      BOM[]
-  batches   ProductionBatch[]
-  designs   Design[]
-  plans     PlanVersion[]
-  measurementCharts   MeasurementChart[]
+  colors               PlanColor[]
+  sizes                PlanSize[]
+  matrix               MatrixCell[]
+  variants             ProductVariant[]
+  boms                 BOM[]
+  batches              ProductionBatch[]
+  designs              Design[]
+  plans                PlanVersion[]
+  measurementCharts    MeasurementChart[]
   materialRequirements MaterialRequirement[]
   purchaseOrders       PurchaseOrder[]
   workOrders           WorkOrder[]
 }
 
 model PlanVersion {
-  id          String   @id @default(cuid())
-  planId      String
-  plan        ProductPlan @relation(fields: [planId], references: [id])
-  version     Int
+  id           String      @id @default(cuid())
+  planId       String
+  plan         ProductPlan @relation(fields: [planId], references: [id])
+  version      Int
   snapshotJson String
-  reason      String?
-  revisedById String?
-  revisedBy   String?
-  createdAt   DateTime @default(now())
+  reason       String?
+  revisedById  String?
+  revisedBy    String?
+  createdAt    DateTime    @default(now())
 
   @@index([planId])
 }
 
 model PlanColor {
-  id          String  @id @default(cuid())
+  id          String      @id @default(cuid())
   planId      String
   plan        ProductPlan @relation(fields: [planId], references: [id])
   name        String
-  hex         String  @default("#334155")
+  hex         String      @default("#334155")
   fabricShade String?
   dyeLot      String?
   notes       String?
-  active      Boolean @default(true)
+  active      Boolean     @default(true)
+  bomItems    BOMItem[]
 
   @@index([planId])
 }
 
 model PlanSize {
-  id              String  @id @default(cuid())
-  planId          String
-  plan            ProductPlan @relation(fields: [planId], references: [id])
-  name            String
+  id               String      @id @default(cuid())
+  planId           String
+  plan             ProductPlan @relation(fields: [planId], references: [id])
+  name             String
   measurementsJson String? // { chest, bust, waist, ... , tolerance, unit }
-  active          Boolean @default(true)
+  active           Boolean     @default(true)
 
   @@index([planId])
 }
 
 model MatrixCell {
-  id      String @id @default(cuid())
+  id      String      @id @default(cuid())
   planId  String
   plan    ProductPlan @relation(fields: [planId], references: [id])
   colorId String
   sizeId  String
-  qty     Int    @default(0)
-  enabled Boolean @default(true)
+  qty     Int         @default(0)
+  enabled Boolean     @default(true)
 
   @@unique([planId, colorId, sizeId])
 }
 
 model ProductVariant {
-  id             String   @id @default(cuid())
-  planId         String
-  plan           ProductPlan @relation(fields: [planId], references: [id])
-  sku            String   @unique
-  colorId        String
-  sizeId         String
-  colorName      String
-  sizeName       String
-  barcode        String?  @unique
-  qrPayload      String?
-  plannedQty     Int      @default(0)
-  producedQty    Int      @default(0)
-  soldQty        Int      @default(0)
-  estMaterialCost Decimal @default(0)
-  estServiceCost  Decimal @default(0)
-  targetPrice     Decimal @default(0)
-  isDemo          Boolean @default(false)
-  createdAt       DateTime @default(now())
+  id              String      @id @default(cuid())
+  planId          String
+  plan            ProductPlan @relation(fields: [planId], references: [id])
+  sku             String      @unique
+  colorId         String
+  sizeId          String
+  colorName       String
+  sizeName        String
+  barcode         String?     @unique
+  qrPayload       String?
+  plannedQty      Int         @default(0)
+  producedQty     Int         @default(0)
+  soldQty         Int         @default(0)
+  estMaterialCost Decimal     @default(0)
+  estServiceCost  Decimal     @default(0)
+  targetPrice     Decimal     @default(0)
+  isDemo          Boolean     @default(false)
+  createdAt       DateTime    @default(now())
 
   batchVariants  BatchVariant[]
   finishedStocks FinishedStock[]
@@ -384,36 +386,36 @@ model ProductVariant {
 }
 
 model MeasurementChart {
-  id           String    @id @default(cuid())
-  planId       String?
-  plan         ProductPlan? @relation(fields: [planId], references: [id])
-  name         String
-  categoryKey  String?
-  unit         String    @default("inch")
-  version      Int       @default(1)
-  itemsJson    String    @default("[]") // [{component,sizeName,measurements{}}]
-  status       String    @default("DRAFT") // DRAFT | APPROVED
-  approvedAt   DateTime?
-  isTemplate   Boolean   @default(false)
-  createdAt    DateTime  @default(now())
+  id          String       @id @default(cuid())
+  planId      String?
+  plan        ProductPlan? @relation(fields: [planId], references: [id])
+  name        String
+  categoryKey String?
+  unit        String       @default("inch")
+  version     Int          @default(1)
+  itemsJson   String       @default("[]") // [{component,sizeName,measurements{}}]
+  status      String       @default("DRAFT") // DRAFT | APPROVED
+  approvedAt  DateTime?
+  isTemplate  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
 }
 
 model Design {
-  id           String    @id @default(cuid())
+  id           String      @id @default(cuid())
   planId       String
   plan         ProductPlan @relation(fields: [planId], references: [id])
   code         String
   name         String
   designer     String?
-  version      Int       @default(1)
-  status       String    @default("DRAFT") // DRAFT | IN_REVIEW | APPROVED | FROZEN
+  version      Int         @default(1)
+  status       String      @default("DRAFT") // DRAFT | IN_REVIEW | APPROVED | FROZEN
   sketchUrl    String?
-  filesJson    String    @default("[]")
+  filesJson    String      @default("[]")
   instructions String?
   approvedAt   DateTime?
   approvedById String?
   frozenAt     DateTime?
-  createdAt    DateTime  @default(now())
+  createdAt    DateTime    @default(now())
 
   samples Sample[]
 
@@ -439,14 +441,14 @@ model Sample {
 }
 
 model BOM {
-  id        String    @id @default(cuid())
-  planId    String
-  plan      ProductPlan @relation(fields: [planId], references: [id])
-  version   Int       @default(1)
-  status    String    @default("DRAFT") // DRAFT | APPROVED
-  notes     String?
+  id         String      @id @default(cuid())
+  planId     String
+  plan       ProductPlan @relation(fields: [planId], references: [id])
+  version    Int         @default(1)
+  status     String      @default("DRAFT") // DRAFT | APPROVED
+  notes      String?
   approvedAt DateTime?
-  createdAt DateTime  @default(now())
+  createdAt  DateTime    @default(now())
 
   items BOMItem[]
 
@@ -454,39 +456,41 @@ model BOM {
 }
 
 model BOMItem {
-  id                String  @id @default(cuid())
+  id                String   @id @default(cuid())
   bomId             String
-  bom               BOM     @relation(fields: [bomId], references: [id])
+  bom               BOM      @relation(fields: [bomId], references: [id])
   materialId        String
   material          Material @relation(fields: [materialId], references: [id])
-  component         String  @default("MAIN") // KAMEEZ | SALWAR | DUPATTA | MAIN | PACKAGING
-  qtyPerPiece       Decimal @default(0)
-  wastagePct        Decimal @default(0)
-  estUnitCost       Decimal @default(0)
+  colorId           String?
+  color             PlanColor? @relation(fields: [colorId], references: [id], onDelete: Restrict)
+  component         String   @default("MAIN") // KAMEEZ | SALWAR | DUPATTA | MAIN | PACKAGING
+  qtyPerPiece       Decimal  @default(0)
+  wastagePct        Decimal  @default(0)
+  estUnitCost       Decimal  @default(0)
   supplierId        String?
   substituteNote    String?
   sizeOverridesJson String? // { "L": 4.25, "XL": 4.5 }
-  stage             String  @default("MATERIAL_PREPARATION")
+  stage             String   @default("MATERIAL_PREPARATION")
 
   @@index([bomId])
 }
 
 model MaterialRequirement {
-  id           String  @id @default(cuid())
+  id           String      @id @default(cuid())
   planId       String
   plan         ProductPlan @relation(fields: [planId], references: [id])
   materialId   String
-  material     Material @relation(fields: [materialId], references: [id])
-  netQty       Decimal @default(0)
-  wastageQty   Decimal @default(0)
-  grossQty     Decimal @default(0)
-  stockQty     Decimal @default(0)
-  reservedQty  Decimal @default(0)
-  incomingQty  Decimal @default(0)
-  shortageQty  Decimal @default(0)
-  suggestedQty Decimal @default(0)
-  estCost      Decimal @default(0)
-  generatedAt  DateTime @default(now())
+  material     Material    @relation(fields: [materialId], references: [id])
+  netQty       Decimal     @default(0)
+  wastageQty   Decimal     @default(0)
+  grossQty     Decimal     @default(0)
+  stockQty     Decimal     @default(0)
+  reservedQty  Decimal     @default(0)
+  incomingQty  Decimal     @default(0)
+  shortageQty  Decimal     @default(0)
+  suggestedQty Decimal     @default(0)
+  estCost      Decimal     @default(0)
+  generatedAt  DateTime    @default(now())
 
   @@unique([planId, materialId])
 }
@@ -505,8 +509,8 @@ model MaterialCategory {
 }
 
 model Material {
-  id                  String   @id @default(cuid())
-  sku                 String   @unique
+  id                  String            @id @default(cuid())
+  sku                 String            @unique
   name                String
   categoryId          String?
   category            MaterialCategory? @relation(fields: [categoryId], references: [id])
@@ -518,16 +522,16 @@ model Material {
   shade               String?
   dyeLot              String?
   preferredSupplierId String?
-  purchaseUnit        String   @default("Yard")
-  baseUnit            String   @default("Yard")
+  purchaseUnit        String            @default("Yard")
+  baseUnit            String            @default("Yard")
   conversionNote      String? // free text conversion when variable
-  purchasePrice       Decimal  @default(0)
-  avgCost             Decimal  @default(0)
-  minStock            Decimal  @default(0)
-  reorderLevel        Decimal  @default(0)
-  isDemo              Boolean  @default(false)
-  isActive            Boolean  @default(true)
-  createdAt           DateTime @default(now())
+  purchasePrice       Decimal           @default(0)
+  avgCost             Decimal           @default(0)
+  minStock            Decimal           @default(0)
+  reorderLevel        Decimal           @default(0)
+  isDemo              Boolean           @default(false)
+  isActive            Boolean           @default(true)
+  createdAt           DateTime          @default(now())
 
   bomItems     BOMItem[]
   requirements MaterialRequirement[]
@@ -544,39 +548,39 @@ model Material {
 // ── Procurement ──
 
 model PurchaseOrder {
-  id                String    @id @default(cuid())
-  code              String    @unique
+  id                String          @id @default(cuid())
+  code              String          @unique
   supplierId        String
   supplier          BusinessPartner @relation(fields: [supplierId], references: [id])
   planId            String?
   plan              ProductPlan?    @relation(fields: [planId], references: [id])
-  type              String    @default("PO") // PO | DIRECT
-  status            String    @default("ORDERED") // DRAFT | ORDERED | PARTIAL | RECEIVED | CANCELLED
-  orderDate         DateTime  @default(now())
+  type              String          @default("PO") // PO | DIRECT
+  status            String          @default("ORDERED") // DRAFT | ORDERED | PARTIAL | RECEIVED | CANCELLED
+  orderDate         DateTime        @default(now())
   expectedDate      DateTime?
   locationId        String?
   warehouseId       String?
   supplierInvoiceNo String?
-  subtotal          Decimal   @default(0)
-  discountAmount    Decimal   @default(0)
-  taxAmount         Decimal   @default(0)
-  transportCost     Decimal   @default(0)
-  loadingCost       Decimal   @default(0)
-  unloadingCost     Decimal   @default(0)
-  otherCost         Decimal   @default(0)
-  total             Decimal   @default(0)
-  paidAmount        Decimal   @default(0)
-  advanceAmount     Decimal   @default(0)
+  subtotal          Decimal         @default(0)
+  discountAmount    Decimal         @default(0)
+  taxAmount         Decimal         @default(0)
+  transportCost     Decimal         @default(0)
+  loadingCost       Decimal         @default(0)
+  unloadingCost     Decimal         @default(0)
+  otherCost         Decimal         @default(0)
+  total             Decimal         @default(0)
+  paidAmount        Decimal         @default(0)
+  advanceAmount     Decimal         @default(0)
   dueDate           DateTime?
-  currency          String    @default("BDT")
-  exchangeRate      Decimal   @default(1)
+  currency          String          @default("BDT")
+  exchangeRate      Decimal         @default(1)
   notes             String?
-  isDemo            Boolean   @default(false)
+  isDemo            Boolean         @default(false)
   createdById       String?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime        @default(now())
 
-  items    PurchaseOrderItem[]
-  receipts MaterialReceipt[]
+  items          PurchaseOrderItem[]
+  receipts       MaterialReceipt[]
   vendorInvoices VendorInvoice[]
 
   @@index([supplierId])
@@ -584,39 +588,39 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id          String  @id @default(cuid())
+  id          String        @id @default(cuid())
   poId        String
   po          PurchaseOrder @relation(fields: [poId], references: [id])
   materialId  String
   material    Material      @relation(fields: [materialId], references: [id])
   colorName   String?
   shade       String?
-  qty         Decimal @default(0)
-  unit        String  @default("Yard")
-  unitPrice   Decimal @default(0)
-  receivedQty Decimal @default(0)
-  lineTotal   Decimal @default(0)
+  qty         Decimal       @default(0)
+  unit        String        @default("Yard")
+  unitPrice   Decimal       @default(0)
+  receivedQty Decimal       @default(0)
+  lineTotal   Decimal       @default(0)
 
   @@index([poId])
 }
 
 model MaterialReceipt {
-  id             String   @id @default(cuid())
-  code           String   @unique
+  id             String         @id @default(cuid())
+  code           String         @unique
   poId           String?
   po             PurchaseOrder? @relation(fields: [poId], references: [id])
   supplierId     String
   warehouseId    String
-  receiptDate    DateTime @default(now())
+  receiptDate    DateTime       @default(now())
   receivedById   String?
-  transportCost  Decimal  @default(0)
-  loadingCost    Decimal  @default(0)
-  unloadingCost  Decimal  @default(0)
-  otherCost      Decimal  @default(0)
+  transportCost  Decimal        @default(0)
+  loadingCost    Decimal        @default(0)
+  unloadingCost  Decimal        @default(0)
+  otherCost      Decimal        @default(0)
   notes          String?
-  isDemo         Boolean  @default(false)
-  idempotencyKey String?  @unique
-  createdAt      DateTime @default(now())
+  isDemo         Boolean        @default(false)
+  idempotencyKey String?        @unique
+  createdAt      DateTime       @default(now())
 
   items MaterialReceiptItem[]
 
@@ -624,7 +628,7 @@ model MaterialReceipt {
 }
 
 model MaterialReceiptItem {
-  id         String  @id @default(cuid())
+  id         String          @id @default(cuid())
   receiptId  String
   receipt    MaterialReceipt @relation(fields: [receiptId], references: [id])
   poItemId   String?
@@ -632,27 +636,27 @@ model MaterialReceiptItem {
   material   Material        @relation(fields: [materialId], references: [id])
   colorName  String?
   shade      String?
-  qty        Decimal @default(0)
-  unit       String  @default("Yard")
-  unitCost   Decimal @default(0)
-  lineTotal  Decimal @default(0)
+  qty        Decimal         @default(0)
+  unit       String          @default("Yard")
+  unitCost   Decimal         @default(0)
+  lineTotal  Decimal         @default(0)
 
   @@index([receiptId])
 }
 
 model PurchaseReturn {
-  id          String   @id @default(cuid())
-  code        String   @unique
-  poId        String?
-  supplierId  String
-  warehouseId String
-  returnDate  DateTime @default(now())
-  reason      String?
-  totalAmount Decimal  @default(0)
-  refundStatus String  @default("PENDING") // PENDING | REFUNDED | CREDITED
-  notes       String?
-  createdById String?
-  createdAt   DateTime @default(now())
+  id           String   @id @default(cuid())
+  code         String   @unique
+  poId         String?
+  supplierId   String
+  warehouseId  String
+  returnDate   DateTime @default(now())
+  reason       String?
+  totalAmount  Decimal  @default(0)
+  refundStatus String   @default("PENDING") // PENDING | REFUNDED | CREDITED
+  notes        String?
+  createdById  String?
+  createdAt    DateTime @default(now())
 
   itemsJson String @default("[]") // [{materialId, qty, unitCost}]
 }
@@ -662,14 +666,14 @@ model PurchaseReturn {
 // ─────────────────────────────────────────────────────────────
 
 model MaterialStock {
-  id           String  @id @default(cuid())
-  materialId   String
-  material     Material @relation(fields: [materialId], references: [id])
-  warehouseId  String
-  warehouse    Warehouse @relation(fields: [warehouseId], references: [id])
-  qty          Decimal @default(0)
-  reservedQty  Decimal @default(0)
-  avgCost      Decimal @default(0)
+  id          String    @id @default(cuid())
+  materialId  String
+  material    Material  @relation(fields: [materialId], references: [id])
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  qty         Decimal   @default(0)
+  reservedQty Decimal   @default(0)
+  avgCost     Decimal   @default(0)
 
   @@unique([materialId, warehouseId])
 }
@@ -701,16 +705,16 @@ model InventoryMovement {
 }
 
 model InventoryReservation {
-  id            String   @id @default(cuid())
-  materialId    String
-  material      Material @relation(fields: [materialId], references: [id])
-  warehouseId   String
-  qty           Decimal  @default(0)
-  planId        String?
-  batchId       String?
-  workOrderId   String?
-  status        String   @default("ACTIVE") // ACTIVE | RELEASED | CONSUMED
-  createdAt     DateTime @default(now())
+  id          String   @id @default(cuid())
+  materialId  String
+  material    Material @relation(fields: [materialId], references: [id])
+  warehouseId String
+  qty         Decimal  @default(0)
+  planId      String?
+  batchId     String?
+  workOrderId String?
+  status      String   @default("ACTIVE") // ACTIVE | RELEASED | CONSUMED
+  createdAt   DateTime @default(now())
 }
 
 model StockAdjustment {
@@ -753,80 +757,80 @@ model ProductionStage {
 }
 
 model ProductionBatch {
-  id            String    @id @default(cuid())
-  code          String    @unique
-  planId        String
-  plan          ProductPlan @relation(fields: [planId], references: [id])
-  plannedQty    Int       @default(0)
-  status        String    @default("PLANNED") // PLANNED | MATERIAL_RESERVED | IN_PROGRESS | PARTIAL | COMPLETED | CANCELLED
-  startDate     DateTime?
+  id                     String      @id @default(cuid())
+  code                   String      @unique
+  planId                 String
+  plan                   ProductPlan @relation(fields: [planId], references: [id])
+  plannedQty             Int         @default(0)
+  status                 String      @default("PLANNED") // PLANNED | MATERIAL_RESERVED | IN_PROGRESS | PARTIAL | COMPLETED | CANCELLED
+  startDate              DateTime?
   expectedCompletionDate DateTime?
-  priority      String    @default("MEDIUM")
-  managerName   String?
-  estBudget     Decimal   @default(0)
-  notes         String?
-  isDemo        Boolean   @default(false)
-  createdById   String?
-  createdAt     DateTime  @default(now())
+  priority               String      @default("MEDIUM")
+  managerName            String?
+  estBudget              Decimal     @default(0)
+  notes                  String?
+  isDemo                 Boolean     @default(false)
+  createdById            String?
+  createdAt              DateTime    @default(now())
 
-  variants     BatchVariant[]
-  workOrders   WorkOrder[]
-  inspections  QualityInspection[]
+  variants    BatchVariant[]
+  workOrders  WorkOrder[]
+  inspections QualityInspection[]
 
   @@index([planId])
 }
 
 model BatchVariant {
-  id           String @id @default(cuid())
+  id           String          @id @default(cuid())
   batchId      String
   batch        ProductionBatch @relation(fields: [batchId], references: [id])
   variantId    String
   variant      ProductVariant  @relation(fields: [variantId], references: [id])
-  plannedQty   Int    @default(0)
-  completedQty Int    @default(0)
+  plannedQty   Int             @default(0)
+  completedQty Int             @default(0)
 
   @@unique([batchId, variantId])
 }
 
 model WorkOrder {
-  id                String    @id @default(cuid())
-  code              String    @unique
+  id                String          @id @default(cuid())
+  code              String          @unique
   batchId           String
   batch             ProductionBatch @relation(fields: [batchId], references: [id])
   planId            String
-  plan              ProductPlan @relation(fields: [planId], references: [id])
+  plan              ProductPlan     @relation(fields: [planId], references: [id])
   type              String // EMBROIDERY | TAILORING | CUTTING | PRINTING | WASHING | FINISHING | OTHER
   stageKey          String?
   partnerId         String
   partner           BusinessPartner @relation(fields: [partnerId], references: [id])
-  status            String    @default("DRAFT")
+  status            String          @default("DRAFT")
   // DRAFT | MATERIALS_PREPARED | DISPATCHED | RECEIVED_BY_FACTORY | IN_PROGRESS | PARTIALLY_COMPLETED
   // | READY_FOR_COLLECTION | PARTIALLY_COLLECTED | AWAITING_QC | REWORK_REQUIRED | COMPLETED | CANCELLED
   dispatchDate      DateTime?
   expectedDate      DateTime?
-  issuedQty         Int       @default(0)
-  unit              String    @default("Piece")
-  pricingJson       String    @default("{}") // { perPiece, perComponent, fixed, cutting, stitching, finishing }
-  estServiceCost    Decimal   @default(0)
-  transportCost     Decimal   @default(0)
-  advanceAmount     Decimal   @default(0)
+  issuedQty         Int             @default(0)
+  unit              String          @default("Piece")
+  pricingJson       String          @default("{}") // { perPiece, perComponent, fixed, cutting, stitching, finishing }
+  estServiceCost    Decimal         @default(0)
+  transportCost     Decimal         @default(0)
+  advanceAmount     Decimal         @default(0)
   instructions      String?
-  receivedQty       Int       @default(0)
-  acceptedQty       Int       @default(0)
-  rejectedQty       Int       @default(0)
-  damagedQty        Int       @default(0)
-  missingQty        Int       @default(0)
-  actualServiceCost Decimal   @default(0)
-  paidAmount        Decimal   @default(0)
+  receivedQty       Int             @default(0)
+  acceptedQty       Int             @default(0)
+  rejectedQty       Int             @default(0)
+  damagedQty        Int             @default(0)
+  missingQty        Int             @default(0)
+  actualServiceCost Decimal         @default(0)
+  paidAmount        Decimal         @default(0)
   vendorInvoiceNo   String?
-  isDemo            Boolean   @default(false)
+  isDemo            Boolean         @default(false)
   notes             String?
   createdById       String?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime        @default(now())
 
-  receipts     WorkOrderReceipt[]
-  materials    WorkOrderMaterial[]
-  inspections  QualityInspection[]
+  receipts    WorkOrderReceipt[]
+  materials   WorkOrderMaterial[]
+  inspections QualityInspection[]
 
   @@index([batchId])
   @@index([partnerId])
@@ -834,45 +838,45 @@ model WorkOrder {
 }
 
 model WorkOrderMaterial {
-  id           String  @id @default(cuid())
+  id           String    @id @default(cuid())
   workOrderId  String
   workOrder    WorkOrder @relation(fields: [workOrderId], references: [id])
   materialId   String
   material     Material  @relation(fields: [materialId], references: [id])
-  issuedQty    Decimal @default(0)
-  consumedQty  Decimal @default(0)
-  returnedQty  Decimal @default(0)
-  wastedQty    Decimal @default(0)
-  remainingQty Decimal @default(0)
+  issuedQty    Decimal   @default(0)
+  consumedQty  Decimal   @default(0)
+  returnedQty  Decimal   @default(0)
+  wastedQty    Decimal   @default(0)
+  remainingQty Decimal   @default(0)
 
   @@unique([workOrderId, materialId])
 }
 
 model WorkOrderReceipt {
-  id              String   @id @default(cuid())
-  code            String
-  workOrderId     String
-  workOrder       WorkOrder @relation(fields: [workOrderId], references: [id])
-  receiptDate     DateTime @default(now())
-  receivedQty     Int      @default(0)
-  acceptedQty     Int      @default(0)
-  rejectedQty     Int      @default(0)
-  damagedQty      Int      @default(0)
-  missingQty      Int      @default(0)
-  consumedJson    String   @default("{}") // {materialId: qty}
-  returnedJson    String   @default("{}")
-  wastedJson      String   @default("{}")
-  remainingJson   String   @default("{}")
-  serviceCharge   Decimal  @default(0)
-  additionalCharge Decimal @default(0)
-  reworkCharge    Decimal  @default(0)
-  transportCost   Decimal  @default(0)
-  invoiceNo       String?
-  paidAmount      Decimal  @default(0)
-  notes           String?
-  receivedById    String?
-  isDemo          Boolean  @default(false)
-  createdAt       DateTime @default(now())
+  id               String    @id @default(cuid())
+  code             String
+  workOrderId      String
+  workOrder        WorkOrder @relation(fields: [workOrderId], references: [id])
+  receiptDate      DateTime  @default(now())
+  receivedQty      Int       @default(0)
+  acceptedQty      Int       @default(0)
+  rejectedQty      Int       @default(0)
+  damagedQty       Int       @default(0)
+  missingQty       Int       @default(0)
+  consumedJson     String    @default("{}") // {materialId: qty}
+  returnedJson     String    @default("{}")
+  wastedJson       String    @default("{}")
+  remainingJson    String    @default("{}")
+  serviceCharge    Decimal   @default(0)
+  additionalCharge Decimal   @default(0)
+  reworkCharge     Decimal   @default(0)
+  transportCost    Decimal   @default(0)
+  invoiceNo        String?
+  paidAmount       Decimal   @default(0)
+  notes            String?
+  receivedById     String?
+  isDemo           Boolean   @default(false)
+  createdAt        DateTime  @default(now())
 
   @@index([workOrderId])
 }
@@ -882,29 +886,29 @@ model WorkOrderReceipt {
 // ─────────────────────────────────────────────────────────────
 
 model QualityInspection {
-  id             String   @id @default(cuid())
-  code           String   @unique
-  inspectionDate DateTime @default(now())
-  inspectorName  String?
-  type           String // RAW_MATERIAL | EMBROIDERY | TAILORING | FINAL_PRODUCTION | PRE_DISPATCH | DESTINATION_RECEIVING
-  batchId        String?
-  batch          ProductionBatch? @relation(fields: [batchId], references: [id])
-  workOrderId    String?
-  workOrder      WorkOrder?       @relation(fields: [workOrderId], references: [id])
-  planId         String?
-  inspectedQty   Int      @default(0)
-  passedQty      Int      @default(0)
-  reworkQty      Int      @default(0)
-  rejectedQty    Int      @default(0)
-  damagedQty     Int      @default(0)
-  defectsJson    String   @default("[]")
-  severity       String?
-  status         String   @default("PENDING") // PASSED | PASSED_MINOR | REWORK_REQUIRED | REJECTED | QUARANTINED
+  id               String           @id @default(cuid())
+  code             String           @unique
+  inspectionDate   DateTime         @default(now())
+  inspectorName    String?
+  type             String // RAW_MATERIAL | EMBROIDERY | TAILORING | FINAL_PRODUCTION | PRE_DISPATCH | DESTINATION_RECEIVING
+  batchId          String?
+  batch            ProductionBatch? @relation(fields: [batchId], references: [id])
+  workOrderId      String?
+  workOrder        WorkOrder?       @relation(fields: [workOrderId], references: [id])
+  planId           String?
+  inspectedQty     Int              @default(0)
+  passedQty        Int              @default(0)
+  reworkQty        Int              @default(0)
+  rejectedQty      Int              @default(0)
+  damagedQty       Int              @default(0)
+  defectsJson      String           @default("[]")
+  severity         String?
+  status           String           @default("PENDING") // PASSED | PASSED_MINOR | REWORK_REQUIRED | REJECTED | QUARANTINED
   correctiveAction String?
-  notes          String?
-  isDemo         Boolean  @default(false)
-  createdById    String?
-  createdAt      DateTime @default(now())
+  notes            String?
+  isDemo           Boolean          @default(false)
+  createdById      String?
+  createdAt        DateTime         @default(now())
 
   reworkOrders ReworkOrder[]
 
@@ -912,16 +916,16 @@ model QualityInspection {
 }
 
 model ReworkOrder {
-  id           String    @id @default(cuid())
-  code         String    @unique
+  id           String            @id @default(cuid())
+  code         String            @unique
   inspectionId String
   inspection   QualityInspection @relation(fields: [inspectionId], references: [id])
   partnerId    String?
-  qty          Int       @default(0)
-  status       String    @default("OPEN") // OPEN | IN_PROGRESS | DONE | CANCELLED
+  qty          Int               @default(0)
+  status       String            @default("OPEN") // OPEN | IN_PROGRESS | DONE | CANCELLED
   notes        String?
   completedAt  DateTime?
-  createdAt    DateTime  @default(now())
+  createdAt    DateTime          @default(now())
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -929,30 +933,30 @@ model ReworkOrder {
 // ─────────────────────────────────────────────────────────────
 
 model FinishedStock {
-  id            String  @id @default(cuid())
+  id            String         @id @default(cuid())
   variantId     String
   variant       ProductVariant @relation(fields: [variantId], references: [id])
   warehouseId   String
   warehouse     Warehouse      @relation(fields: [warehouseId], references: [id])
-  qty           Int     @default(0)
-  reservedQty   Int     @default(0) // reserved by packages
-  packedQty     Int     @default(0)
-  unitCost      Decimal @default(0)
-  qualityStatus String  @default("PASSED")
+  qty           Int            @default(0)
+  reservedQty   Int            @default(0) // reserved by packages
+  packedQty     Int            @default(0)
+  unitCost      Decimal        @default(0)
+  qualityStatus String         @default("PASSED")
 
   @@unique([variantId, warehouseId])
 }
 
 model FinishedMovement {
-  id              String   @id @default(cuid())
-  movementDate    DateTime @default(now())
+  id              String         @id @default(cuid())
+  movementDate    DateTime       @default(now())
   variantId       String
   variant         ProductVariant @relation(fields: [variantId], references: [id])
   fromWarehouseId String?
   toWarehouseId   String?
-  qty             Int      @default(0)
-  unitCost        Decimal  @default(0)
-  value           Decimal  @default(0)
+  qty             Int            @default(0)
+  unitCost        Decimal        @default(0)
+  value           Decimal        @default(0)
   type            String // PRODUCTION_IN | PACK | UNPACK | DISPATCH_OUT | RECEIVE_IN | SALE_OUT | RETURN_IN | ADJUST | WRITE_OFF
   refType         String?
   refId           String?
@@ -960,7 +964,7 @@ model FinishedMovement {
   userId          String?
   userName        String?
   note            String?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime       @default(now())
 
   from Warehouse? @relation("FMFrom", fields: [fromWarehouseId], references: [id])
   to   Warehouse? @relation("FMTo", fields: [toWarehouseId], references: [id])
@@ -974,100 +978,100 @@ model FinishedMovement {
 // ─────────────────────────────────────────────────────────────
 
 model Package {
-  id                String    @id @default(cuid())
-  code              String    @unique
+  id                String   @id @default(cuid())
+  code              String   @unique
   boxNo             String
   barcode           String?
   qrPayload         String?
   sourceWarehouseId String
   destLocationId    String?
-  status            String    @default("PACKED") // PACKED | DISPATCHED | IN_TRANSIT | RECEIVED | CANCELLED | DAMAGED
-  packingDate       DateTime  @default(now())
-  netWeight         Decimal   @default(0)
-  grossWeight       Decimal   @default(0)
-  lengthCm          Decimal   @default(0)
-  widthCm           Decimal   @default(0)
-  heightCm          Decimal   @default(0)
-  packagingCost     Decimal   @default(0)
+  status            String   @default("PACKED") // PACKED | DISPATCHED | IN_TRANSIT | RECEIVED | CANCELLED | DAMAGED
+  packingDate       DateTime @default(now())
+  netWeight         Decimal  @default(0)
+  grossWeight       Decimal  @default(0)
+  lengthCm          Decimal  @default(0)
+  widthCm           Decimal  @default(0)
+  heightCm          Decimal  @default(0)
+  packagingCost     Decimal  @default(0)
   packedByName      String?
   shipmentId        String?
-  isDemo            Boolean   @default(false)
+  isDemo            Boolean  @default(false)
   notes             String?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime @default(now())
 
-  items          PackageItem[]
-  shipmentLinks  ShipmentPackage[]
+  items         PackageItem[]
+  shipmentLinks ShipmentPackage[]
 
   @@index([status])
 }
 
 model PackageItem {
-  id        String @id @default(cuid())
+  id        String         @id @default(cuid())
   packageId String
-  package   Package @relation(fields: [packageId], references: [id])
+  package   Package        @relation(fields: [packageId], references: [id])
   variantId String
   variant   ProductVariant @relation(fields: [variantId], references: [id])
   batchId   String?
-  qty       Int    @default(0)
-  unitCost  Decimal @default(0)
+  qty       Int            @default(0)
+  unitCost  Decimal        @default(0)
 
   @@index([packageId])
 }
 
 model Shipment {
-  id                  String    @id @default(cuid())
-  code                String    @unique
-  type                String    @default("LOCAL") // LOCAL | INTERNATIONAL
-  status              String    @default("DRAFT")
+  id                 String     @id @default(cuid())
+  code               String     @unique
+  type               String     @default("LOCAL") // LOCAL | INTERNATIONAL
+  status             String     @default("DRAFT")
   // DRAFT | READY | DISPATCHED | IN_TRANSIT | PARTIALLY_RECEIVED | DELIVERED | RECEIVED_VERIFIED
   // | DELAYED | EXCEPTION | RETURNED | CANCELLED
-  originLocationId    String?
-  originWarehouseId   String?
-  originWarehouse     Warehouse? @relation("ShipOrigin", fields: [originWarehouseId], references: [id])
-  destLocationId      String?
-  destWarehouseId     String?
-  destWarehouse       Warehouse? @relation("ShipDest", fields: [destWarehouseId], references: [id])
-  dispatchDate        DateTime?
-  expectedArrival     DateTime?
-  actualArrival       DateTime?
-  transportCompanyId  String?
-  courierCompanyId    String?
-  freightForwarderId  String?
-  transportMethod     String?
-  trackingId          String?
-  awbNo               String?
-  blRef               String?
-  customsRef          String?
-  hsCode              String?
-  countryOfOrigin     String?
-  incoterms           String?
-  vehicleType         String?
-  vehicleReg          String?
-  driverName          String?
-  driverPhone         String?
-  senderInfo          String?
-  receiverInfo        String?
-  pickupAddress       String?
-  deliveryAddress     String?
-  freightCharge       Decimal   @default(0)
-  insuranceCharge     Decimal   @default(0)
-  customsCharge       Decimal   @default(0)
-  importDuties        Decimal   @default(0)
-  taxesCharge         Decimal   @default(0)
-  docCharge           Decimal   @default(0)
-  handlingCharge      Decimal   @default(0)
-  lastMileCharge      Decimal   @default(0)
-  otherCharge         Decimal   @default(0)
-  totalCost           Decimal   @default(0)
-  currency            String    @default("BDT")
-  exchangeRate        Decimal   @default(1)
-  totalCostBdt        Decimal   @default(0)
-  paidAmount          Decimal   @default(0)
-  customsStatus       String?
-  isDemo              Boolean   @default(false)
-  notes               String?
-  createdById         String?
-  createdAt           DateTime  @default(now())
+  originLocationId   String?
+  originWarehouseId  String?
+  originWarehouse    Warehouse? @relation("ShipOrigin", fields: [originWarehouseId], references: [id])
+  destLocationId     String?
+  destWarehouseId    String?
+  destWarehouse      Warehouse? @relation("ShipDest", fields: [destWarehouseId], references: [id])
+  dispatchDate       DateTime?
+  expectedArrival    DateTime?
+  actualArrival      DateTime?
+  transportCompanyId String?
+  courierCompanyId   String?
+  freightForwarderId String?
+  transportMethod    String?
+  trackingId         String?
+  awbNo              String?
+  blRef              String?
+  customsRef         String?
+  hsCode             String?
+  countryOfOrigin    String?
+  incoterms          String?
+  vehicleType        String?
+  vehicleReg         String?
+  driverName         String?
+  driverPhone        String?
+  senderInfo         String?
+  receiverInfo       String?
+  pickupAddress      String?
+  deliveryAddress    String?
+  freightCharge      Decimal    @default(0)
+  insuranceCharge    Decimal    @default(0)
+  customsCharge      Decimal    @default(0)
+  importDuties       Decimal    @default(0)
+  taxesCharge        Decimal    @default(0)
+  docCharge          Decimal    @default(0)
+  handlingCharge     Decimal    @default(0)
+  lastMileCharge     Decimal    @default(0)
+  otherCharge        Decimal    @default(0)
+  totalCost          Decimal    @default(0)
+  currency           String     @default("BDT")
+  exchangeRate       Decimal    @default(1)
+  totalCostBdt       Decimal    @default(0)
+  paidAmount         Decimal    @default(0)
+  customsStatus      String?
+  isDemo             Boolean    @default(false)
+  notes              String?
+  createdById        String?
+  createdAt          DateTime   @default(now())
 
   packages      ShipmentPackage[]
   receipts      ShipmentReceipt[]
@@ -1079,7 +1083,7 @@ model Shipment {
 }
 
 model ShipmentPackage {
-  id         String  @id @default(cuid())
+  id         String   @id @default(cuid())
   shipmentId String
   shipment   Shipment @relation(fields: [shipmentId], references: [id])
   packageId  String
@@ -1109,32 +1113,32 @@ model ShipmentReceipt {
 }
 
 model ShipmentDiscrepancy {
-  id          String    @id @default(cuid())
+  id          String         @id @default(cuid())
   shipmentId  String
-  shipment    Shipment  @relation(fields: [shipmentId], references: [id])
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id])
   variantId   String
   variant     ProductVariant @relation(fields: [variantId], references: [id])
-  expectedQty Int       @default(0)
-  receivedQty Int       @default(0)
-  damagedQty  Int       @default(0)
-  missingQty  Int       @default(0)
-  status      String    @default("OPEN") // OPEN | RESOLVED | WRITTEN_OFF
+  expectedQty Int            @default(0)
+  receivedQty Int            @default(0)
+  damagedQty  Int            @default(0)
+  missingQty  Int            @default(0)
+  status      String         @default("OPEN") // OPEN | RESOLVED | WRITTEN_OFF
   resolution  String?
   resolvedAt  DateTime?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime       @default(now())
 
   @@index([shipmentId])
 }
 
 model LandedCostEntry {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   shipmentId  String
-  shipment    Shipment @relation(fields: [shipmentId], references: [id])
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id])
   variantId   String
   variant     ProductVariant @relation(fields: [variantId], references: [id])
   warehouseId String
-  amount      Decimal  @default(0)
-  createdAt   DateTime @default(now())
+  amount      Decimal        @default(0)
+  createdAt   DateTime       @default(now())
 
   @@index([shipmentId])
   @@index([variantId])
@@ -1170,13 +1174,13 @@ model TransportationExpense {
 // ─────────────────────────────────────────────────────────────
 
 model Account {
-  id        String  @id @default(cuid())
-  code      String  @unique
-  name      String
-  type      String // CASH | BANK | MOBILE_BANKING | PAYABLE | RECEIVABLE | INVENTORY | EXPENSE | INCOME | EQUITY | TAX | ADVANCE
-  currency  String  @default("BDT")
-  balance   Decimal @default(0)
-  isActive  Boolean @default(true)
+  id       String  @id @default(cuid())
+  code     String  @unique
+  name     String
+  type     String // CASH | BANK | MOBILE_BANKING | PAYABLE | RECEIVABLE | INVENTORY | EXPENSE | INCOME | EQUITY | TAX | ADVANCE
+  currency String  @default("BDT")
+  balance  Decimal @default(0)
+  isActive Boolean @default(true)
 
   journalLines JournalLine[]
 
@@ -1184,17 +1188,17 @@ model Account {
 }
 
 model JournalEntry {
-  id          String    @id @default(cuid())
-  entryNo     String    @unique
-  date        DateTime  @default(now())
-  memo        String?
-  refType     String?
-  refId       String?
-  refNo       String?
-  postedById  String?
-  reversedAt  DateTime?
+  id           String    @id @default(cuid())
+  entryNo      String    @unique
+  date         DateTime  @default(now())
+  memo         String?
+  refType      String?
+  refId        String?
+  refNo        String?
+  postedById   String?
+  reversedAt   DateTime?
   reversalOfId String?
-  createdAt   DateTime  @default(now())
+  createdAt    DateTime  @default(now())
 
   lines JournalLine[]
 
@@ -1203,13 +1207,13 @@ model JournalEntry {
 }
 
 model JournalLine {
-  id        String  @id @default(cuid())
+  id        String       @id @default(cuid())
   entryId   String
   entry     JournalEntry @relation(fields: [entryId], references: [id])
   accountId String
   account   Account      @relation(fields: [accountId], references: [id])
-  debit     Decimal @default(0)
-  credit    Decimal @default(0)
+  debit     Decimal      @default(0)
+  credit    Decimal      @default(0)
   memo      String?
 
   @@index([entryId])
@@ -1217,9 +1221,9 @@ model JournalLine {
 }
 
 model Expense {
-  id            String   @id @default(cuid())
-  code          String   @unique
-  date          DateTime @default(now())
+  id            String           @id @default(cuid())
+  code          String           @unique
+  date          DateTime         @default(now())
   category      String
   description   String
   partnerId     String?
@@ -1228,36 +1232,36 @@ model Expense {
   batchId       String?
   locationId    String?
   shipmentId    String?
-  amount        Decimal  @default(0)
-  currency      String   @default("BDT")
+  amount        Decimal          @default(0)
+  currency      String           @default("BDT")
   accountId     String?
-  paymentStatus String   @default("PAID") // PAID | UNPAID | PARTIAL
+  paymentStatus String           @default("PAID") // PAID | UNPAID | PARTIAL
   approvedById  String?
-  isDemo        Boolean  @default(false)
+  isDemo        Boolean          @default(false)
   notes         String?
   createdById   String?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime         @default(now())
 
   @@index([date])
   @@index([category])
 }
 
 model VendorInvoice {
-  id          String    @id @default(cuid())
+  id          String          @id @default(cuid())
   invoiceNo   String
   partnerId   String
   partner     BusinessPartner @relation(fields: [partnerId], references: [id])
   workOrderId String?
   poId        String?
-  po          PurchaseOrder? @relation(fields: [poId], references: [id])
-  date        DateTime  @default(now())
+  po          PurchaseOrder?  @relation(fields: [poId], references: [id])
+  date        DateTime        @default(now())
   dueDate     DateTime?
-  amount      Decimal   @default(0)
-  paidAmount  Decimal   @default(0)
-  status      String    @default("OPEN") // OPEN | PARTIAL | PAID | CANCELLED
-  isDemo      Boolean   @default(false)
+  amount      Decimal         @default(0)
+  paidAmount  Decimal         @default(0)
+  status      String          @default("OPEN") // OPEN | PARTIAL | PAID | CANCELLED
+  isDemo      Boolean         @default(false)
   notes       String?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime        @default(now())
 
   @@index([partnerId])
   @@index([status])
@@ -1285,11 +1289,11 @@ model Payment {
 }
 
 model ExchangeRate {
-  id   String   @id @default(cuid())
-  date DateTime @default(now())
-  base String
+  id    String   @id @default(cuid())
+  date  DateTime @default(now())
+  base  String
   quote String
-  rate Decimal 
+  rate  Decimal
 
   @@unique([date, base, quote])
 }
@@ -1297,35 +1301,35 @@ model ExchangeRate {
 // ── Costing ──
 
 model VariantCost {
-  id             String   @id @default(cuid())
-  variantId      String   @unique
-  variant        ProductVariant @relation(fields: [variantId], references: [id])
-  materialCost   Decimal  @default(0)
-  serviceCost    Decimal  @default(0)
-  transportCost  Decimal  @default(0)
-  otherCost      Decimal  @default(0)
-  mfgCost        Decimal  @default(0) // material + service
-  landedCostBdt  Decimal  @default(0)
-  landedCostSylhet Decimal @default(0)
-  landedCostUk   Decimal  @default(0)
-  finalized      Boolean  @default(false)
-  finalizedAt    DateTime?
-  updatedAt      DateTime @updatedAt
+  id               String         @id @default(cuid())
+  variantId        String         @unique
+  variant          ProductVariant @relation(fields: [variantId], references: [id])
+  materialCost     Decimal        @default(0)
+  serviceCost      Decimal        @default(0)
+  transportCost    Decimal        @default(0)
+  otherCost        Decimal        @default(0)
+  mfgCost          Decimal        @default(0) // material + service
+  landedCostBdt    Decimal        @default(0)
+  landedCostSylhet Decimal        @default(0)
+  landedCostUk     Decimal        @default(0)
+  finalized        Boolean        @default(false)
+  finalizedAt      DateTime?
+  updatedAt        DateTime       @updatedAt
 }
 
 model CostEntry {
-  id        String   @id @default(cuid())
+  id        String         @id @default(cuid())
   variantId String
   variant   ProductVariant @relation(fields: [variantId], references: [id])
   batchId   String?
   category  String // MATERIAL | EMBROIDERY | TAILORING | CUTTING | PRINTING | WASHING | FINISHING | TRANSPORT | PACKAGING | LOCAL_SHIPMENT | INTL_FREIGHT | CUSTOMS | OTHER
-  amount    Decimal  @default(0)
+  amount    Decimal        @default(0)
   refType   String?
   refId     String?
   refNo     String?
-  date      DateTime @default(now())
+  date      DateTime       @default(now())
   note      String?
-  createdAt DateTime @default(now())
+  createdAt DateTime       @default(now())
 
   @@index([variantId])
 }
@@ -1335,26 +1339,26 @@ model CostEntry {
 // ─────────────────────────────────────────────────────────────
 
 model SalesInvoice {
-  id             String    @id @default(cuid())
-  code           String    @unique
+  id             String          @id @default(cuid())
+  code           String          @unique
   customerId     String
   customer       BusinessPartner @relation(fields: [customerId], references: [id])
-  type           String    @default("WHOLESALE") // WHOLESALE | RETAIL
+  type           String          @default("WHOLESALE") // WHOLESALE | RETAIL
   locationId     String?
   warehouseId    String?
-  invoiceDate    DateTime  @default(now())
-  currency       String    @default("BDT")
-  exchangeRate   Decimal   @default(1)
-  subtotal       Decimal   @default(0)
-  discountAmount Decimal   @default(0)
-  total          Decimal   @default(0)
-  paidAmount     Decimal   @default(0)
-  cogs           Decimal   @default(0)
-  status         String    @default("CONFIRMED") // DRAFT | CONFIRMED | PARTIAL | PAID | CANCELLED
-  isDemo         Boolean   @default(false)
+  invoiceDate    DateTime        @default(now())
+  currency       String          @default("BDT")
+  exchangeRate   Decimal         @default(1)
+  subtotal       Decimal         @default(0)
+  discountAmount Decimal         @default(0)
+  total          Decimal         @default(0)
+  paidAmount     Decimal         @default(0)
+  cogs           Decimal         @default(0)
+  status         String          @default("CONFIRMED") // DRAFT | CONFIRMED | PARTIAL | PAID | CANCELLED
+  isDemo         Boolean         @default(false)
   notes          String?
   createdById    String?
-  createdAt      DateTime  @default(now())
+  createdAt      DateTime        @default(now())
 
   items SalesInvoiceItem[]
 
@@ -1363,15 +1367,15 @@ model SalesInvoice {
 }
 
 model SalesInvoiceItem {
-  id        String  @id @default(cuid())
+  id        String         @id @default(cuid())
   invoiceId String
-  invoice   SalesInvoice @relation(fields: [invoiceId], references: [id])
+  invoice   SalesInvoice   @relation(fields: [invoiceId], references: [id])
   variantId String
   variant   ProductVariant @relation(fields: [variantId], references: [id])
-  qty       Int     @default(0)
-  unitPrice Decimal @default(0)
-  unitCost  Decimal @default(0)
-  lineTotal Decimal @default(0)
+  qty       Int            @default(0)
+  unitPrice Decimal        @default(0)
+  unitCost  Decimal        @default(0)
+  lineTotal Decimal        @default(0)
 
   @@index([invoiceId])
 }
@@ -1409,4 +1413,14 @@ model Document {
 
   @@index([refType, refId])
   @@index([category])
+}
+
+model SalesRequest {
+  key         String   @id
+  action      String
+  requestHash String
+  resourceId  String?
+  createdAt   DateTime @default(now())
+
+  @@index([action])
 }

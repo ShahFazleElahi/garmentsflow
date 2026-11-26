@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiPost, fmtMoney, fmtNum, fmtDate, statusLabel, idem } from "@/lib/gf-api";
 import { PageHeader, StatCard, StatusBadge, ErrorText, DataTable, type Column } from "./ui-bits";
 import type { ViewProps } from "./shell";
@@ -92,6 +92,8 @@ function NewSaleDialog({ onClose }: { onClose: (d: boolean) => void }) {
   const [paymentAccountCode, setPaymentAccountCode] = useState("1010");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const [idempotencyKey] = useState(() => idem());
 
   useEffect(() => {
     api<FGStock[]>("ops/finished-stocks").then((all) => setStocks(all.filter((s) => s.warehouse.type === "MAIN" && s.qty > 0))).catch((e) => setError(e.message));
@@ -111,21 +113,23 @@ function NewSaleDialog({ onClose }: { onClose: (d: boolean) => void }) {
   const fx = currency === "BDT" ? 1 : rates[`${currency}_BDT`] ?? 0;
 
   const submit = async () => {
+    if (submitting.current) return;
     if (fx <= 0) { setError("Configure the currency exchange rate in master settings before selling."); return; }
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
       await apiPost("finance/sales/create", {
         customerId, type, warehouseId, currency, exchangeRate: fx,
         items: lines.filter((l) => l.variantId && l.qty > 0),
-        paidAmount, paymentAccountCode, idempotencyKey: idem(),
+        paidAmount, paymentAccountCode, idempotencyKey,
       });
       toast({ title: "Sale recorded", description: `Revenue ${fmtMoney(total, currency)} · est. gross profit ${fmtMoney(total * fx - cogsEst)}` });
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+    <Dialog open onOpenChange={(o) => !o && !submitting.current && onClose(false)}>
       <DialogContent className="max-w-xl max-h-[92vh] overflow-y-auto">
         <DialogHeader><DialogTitle>New Sale</DialogTitle><DialogDescription>Stock is deducted and COGS posted at weighted-average unit cost.</DialogDescription></DialogHeader>
         <ErrorText error={error} />
@@ -175,7 +179,7 @@ function NewSaleDialog({ onClose }: { onClose: (d: boolean) => void }) {
         </div>
         <p className="text-xs text-muted-foreground">Est. COGS ৳{fmtNum(cogsEst)} · est. gross profit ৳{fmtNum(total * fx - cogsEst)}</p>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy || !customerId || !warehouseId || total <= 0} className="bg-violet-600 hover:bg-violet-700">Record sale</Button>
         </DialogFooter>
       </DialogContent>
@@ -184,24 +188,28 @@ function NewSaleDialog({ onClose }: { onClose: (d: boolean) => void }) {
 }
 
 function ReceivePaymentDialog({ invoice, onClose }: { invoice: SalesInvoice; onClose: (d: boolean) => void }) {
-  const [amount, setAmount] = useState(Number(invoice.total) - Number(invoice.paidAmount));
+  const [amount, setAmount] = useState(() => Number((Number(invoice.total) - Number(invoice.paidAmount)).toFixed(2)));
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountCode, setAccountCode] = useState("1010");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const [idempotencyKey] = useState(() => idem());
   useEffect(() => {
     api<Account[]>("master/accounts").then((a) => setAccounts(a.filter((x) => ["CASH", "BANK", "MOBILE_BANKING"].includes(x.type)))).catch(() => null);
   }, []);
   const submit = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
-      await apiPost("finance/sales/payment", { invoiceId: invoice.id, amount, accountCode, method: "BANK" });
+      await apiPost("finance/sales/payment", { invoiceId: invoice.id, amount, accountCode, method: "BANK", idempotencyKey });
       toast({ title: "Payment received", description: fmtMoney(amount, invoice.currency) });
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+    <Dialog open onOpenChange={(o) => !o && !submitting.current && onClose(false)}>
       <DialogContent className="max-w-sm">
         <DialogHeader><DialogTitle>Receive Payment — {invoice.code}</DialogTitle><DialogDescription>{invoice.customer.name} — outstanding {fmtMoney(Number(invoice.total) - Number(invoice.paidAmount), invoice.currency)}</DialogDescription></DialogHeader>
         <ErrorText error={error} />
@@ -211,7 +219,7 @@ function ReceivePaymentDialog({ invoice, onClose }: { invoice: SalesInvoice; onC
             <SelectContent>{accounts.map((a) => <SelectItem key={a.code} value={a.code}>{a.name}</SelectItem>)}</SelectContent></Select>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy || amount <= 0}>Receive</Button>
         </DialogFooter>
       </DialogContent>

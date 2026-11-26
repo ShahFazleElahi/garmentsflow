@@ -1,7 +1,9 @@
+import { Prisma as ProfitPrisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { bad, ok, ser, requirePerm, q } from "./helpers";
 import { NextRequest } from "next/server";
 import { N } from "../core";
+import { can, scopedLocations } from "../auth";
 
 function toCsv(rows: Record<string, unknown>[]): string {
   if (!rows.length) return "";
@@ -16,9 +18,15 @@ function toCsv(rows: Record<string, unknown>[]): string {
 
 export async function handleGet(segments: string[], req: NextRequest) {
   const [resource] = segments;
-  const auth = await requirePerm(req, !resource ? "view" : resource.startsWith("financial") || resource.startsWith("costing") || ["profitability", "inventory-valuation", "procurement", "material-consumption", "vendor-custody", "production", "logistics"].includes(resource) ? "view_financial" : "view");
+  const financialReport = resource && (resource.startsWith("financial") || resource.startsWith("costing") ||
+    ["profitability", "inventory-valuation", "procurement", "material-consumption", "vendor-custody", "production", "logistics"].includes(resource));
+  const auth = await requirePerm(req, financialReport ? "view_financial" : "view");
   if ("error" in auth) return auth.error;
   const { user } = auth;
+  const locations = scopedLocations(user);
+  if (locations && financialReport && !["profitability", "inventory-valuation", "procurement"].includes(resource)) {
+    return bad("This financial report requires unrestricted location access", 403);
+  }
   const format = q(req, "format");
   const planId = q(req, "planId");
   const partnerId = q(req, "partnerId");
@@ -39,13 +47,13 @@ export async function handleGet(segments: string[], req: NextRequest) {
         status: p.status, plannedQty: p.plannedQty, variants: p.variants.length,
         produced: p.variants.reduce((a, v) => a + v.producedQty, 0),
         batched: p.batches.reduce((a, b) => a + b.plannedQty, 0),
-        estimatedBudget: Number(p.estimatedBudget), version: p.version,
+        ...(can(user, "view_financial") && !locations ? { estimatedBudget: Number(p.estimatedBudget) } : {}), version: p.version,
       }));
       break;
     }
     case "procurement": {
       const pos = await db.purchaseOrder.findMany({
-        where: partnerId ? { supplierId: partnerId } : undefined,
+        where: { supplierId: partnerId ?? undefined, locationId: locations ? { in: locations } : undefined },
         include: { supplier: true, items: { include: { material: true } } },
         orderBy: { orderDate: "desc" },
       });
@@ -57,7 +65,10 @@ export async function handleGet(segments: string[], req: NextRequest) {
       break;
     }
     case "inventory-valuation": {
-      const stocks = await db.materialStock.findMany({ include: { material: { include: { category: true } }, warehouse: { include: { location: true } } } });
+      const stocks = await db.materialStock.findMany({
+        where: locations ? { warehouse: { locationId: { in: locations } } } : undefined,
+        include: { material: { include: { category: true } }, warehouse: { include: { location: true } } },
+      });
       rows = stocks.map((s) => ({
         material: s.material.name, sku: s.material.sku, category: s.material.category?.name ?? "",
         warehouse: s.warehouse.name, location: s.warehouse.location.name,
@@ -199,21 +210,152 @@ export async function handleGet(segments: string[], req: NextRequest) {
       break;
     }
     case "profitability": {
-      const plans = await db.productPlan.findMany({ include: { variants: { include: { cost: true } }, batches: true } });
-      const salesItems = await db.salesInvoiceItem.findMany({ where: { invoice: { status: { not: "CANCELLED" } } }, include: { invoice: true, variant: true } });
-      rows = plans.map((p) => {
-        const revenue = salesItems.filter((s) => s.variant.planId === p.id).reduce((a, s) => a + N(s.lineTotal) * N(s.invoice.exchangeRate), 0);
-        const cogs = salesItems.filter((s) => s.variant.planId === p.id).reduce((a, s) => a + N(s.unitCost) * s.qty, 0);
+      const plans = await db.productPlan.findMany({
+        where: planId ? { id: planId } : undefined,
+        include: { variants: true },
+      });
+
+      const salesItems = await db.salesInvoiceItem.findMany({
+        where: {
+          invoice: {
+            locationId: locations ? { in: locations } : undefined,
+            status: {
+              in: ["CONFIRMED", "PARTIAL", "PAID"],
+            },
+            items: planId ? { some: { variant: { planId } } } : undefined,
+          },
+        },
+        include: {
+          invoice: true,
+          variant: true,
+        },
+        orderBy: { id: "asc" },
+      });
+
+      const Dec = ProfitPrisma.Decimal;
+
+      type Totals = {
+        revenue: InstanceType<typeof Dec>;
+        cogs: InstanceType<typeof Dec>;
+        sold: number;
+      };
+
+      const totals = new Map<string, Totals>();
+
+      const grouped = new Map<string, typeof salesItems>();
+
+      for (const item of salesItems) {
+        const items = grouped.get(item.invoiceId) ?? [];
+        items.push(item);
+        grouped.set(item.invoiceId, items);
+      }
+
+      for (const items of grouped.values()) {
+        const invoice = items[0].invoice;
+
+        const revenueTotal = new Dec(invoice.total)
+          .mul(invoice.exchangeRate)
+          .toDecimalPlaces(2);
+
+        const cogsTotal = new Dec(invoice.cogs)
+          .toDecimalPlaces(2);
+
+        const grossWeight = items.reduce(
+          (total, item) => total.add(item.lineTotal),
+          new Dec(0)
+        );
+
+        const costWeight = items.reduce(
+          (total, item) =>
+            total.add(new Dec(item.unitCost).mul(item.qty)),
+          new Dec(0)
+        );
+
+        if (grossWeight.lte(0) || costWeight.lte(0)) {
+          return bad(
+            "Sales invoice requires profitability reconciliation",
+            409
+          );
+        }
+
+        let cumulativeGross = new Dec(0);
+        let cumulativeCost = new Dec(0);
+        let allocatedRevenue = new Dec(0);
+        let allocatedCogs = new Dec(0);
+
+        for (const item of items) {
+          cumulativeGross = cumulativeGross.add(item.lineTotal);
+
+          cumulativeCost = cumulativeCost.add(
+            new Dec(item.unitCost).mul(item.qty)
+          );
+
+          const revenueToDate = revenueTotal
+            .mul(cumulativeGross)
+            .div(grossWeight)
+            .toDecimalPlaces(2);
+
+          const cogsToDate = cogsTotal
+            .mul(cumulativeCost)
+            .div(costWeight)
+            .toDecimalPlaces(2);
+
+          const revenue = revenueToDate.sub(allocatedRevenue);
+
+          const cogs = cogsToDate.sub(allocatedCogs);
+
+          allocatedRevenue = revenueToDate;
+          allocatedCogs = cogsToDate;
+
+          const current = totals.get(item.variant.planId) ?? {
+            revenue: new Dec(0),
+            cogs: new Dec(0),
+            sold: 0,
+          };
+
+          current.revenue = current.revenue.add(revenue);
+          current.cogs = current.cogs.add(cogs);
+          current.sold += item.qty;
+
+          totals.set(item.variant.planId, current);
+        }
+      }
+
+      rows = plans.map(plan => {
+        const current = totals.get(plan.id) ?? {
+          revenue: new Dec(0),
+          cogs: new Dec(0),
+          sold: 0,
+        };
+
+        const grossProfit = current.revenue.sub(current.cogs);
+
+        const margin = current.revenue.gt(0)
+          ? grossProfit
+              .div(current.revenue)
+              .mul(100)
+              .toDecimalPlaces(2)
+              .toNumber()
+          : 0;
+
         return {
-          plan: p.code, name: p.name, status: p.status, plannedQty: p.plannedQty,
-          produced: p.variants.reduce((a, v) => a + v.producedQty, 0),
-          sold: salesItems.filter((s) => s.variant.planId === p.id).reduce((a, s) => a + s.qty, 0),
-          revenue: Math.round(revenue), cogs: Math.round(cogs),
-          grossProfit: Math.round(revenue - cogs),
-          margin: revenue > 0 ? Math.round(((revenue - cogs) / revenue) * 100) : 0,
-          estimatedBudget: Number(p.estimatedBudget),
+          plan: plan.code,
+          name: plan.name,
+          status: plan.status,
+          plannedQty: plan.plannedQty,
+          produced: plan.variants.reduce(
+            (total, variant) => total + variant.producedQty,
+            0
+          ),
+          sold: current.sold,
+          revenue: current.revenue.toNumber(),
+          cogs: current.cogs.toNumber(),
+          grossProfit: grossProfit.toNumber(),
+          margin,
+          estimatedBudget: Number(plan.estimatedBudget),
         };
       });
+
       break;
     }
     default:
