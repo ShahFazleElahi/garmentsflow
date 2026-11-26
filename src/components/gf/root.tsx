@@ -94,10 +94,41 @@ function LoginScreen({ onLogin, lang, setLang }: { onLogin: (u: SessionUser) => 
             ))}
           </div>
         </div>
-        <p className="text-xs text-white/40">
-          © {currentYear} GarmentFlow · Developed by{" "}
-          <a href="https://assetifyhub.com" target="_blank" rel="noreferrer" className="underline hover:text-white/70">Assetify Hub Technologies</a>
-        </p>
+        <footer className="space-y-2 text-xs text-white/50 leading-relaxed">
+          <p>
+            Developed by{" "}
+            <a
+              href="https://assetifyhub.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-white/80 hover:text-white transition-colors"
+            >
+              Assetify Hub Technologies
+            </a>
+          </p>
+          <p>
+            © {currentYear} Assetify Hub Technologies. All rights reserved.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href="https://assetifyhub.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white transition-colors"
+            >
+              assetifyhub.com
+            </a>
+            <span>·</span>
+            <a
+              href="https://www.facebook.com/profile.php?id=61583933039295"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-white transition-colors"
+            >
+              Facebook
+            </a>
+          </div>
+        </footer>
       </div>
 
       {/* Login form */}

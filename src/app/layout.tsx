@@ -7,7 +7,11 @@ export const metadata: Metadata = {
   title: "GarmentFlow — Outsourced Garments Operation Management",
   description:
     "From Product Planning to Global Delivery. Plan collections, procure materials, outsource embroidery & tailoring, run QC, pack and ship — with true costing and profitability.",
-  icons: { icon: "/garmentflow-icon.svg" },
+  icons: {
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg",
+    apple: "/favicon.svg",
+  },
 };
 
 export const viewport: Viewport = {
