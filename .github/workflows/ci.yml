@@ -1,0 +1,45 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/garmentsflow
+      AUTH_SECRET: ci-only-secret-not-for-production-123456789
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: garmentsflow
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: npm run db:validate
+      - run: npm run db:deploy
+      - run: npx --no-install prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run db:init
+        env:
+          ADMIN_EMAIL: ci@example.invalid
+          ADMIN_PASSWORD: CI-Test-Only-Password-123!
+      - name: Production smoke tests
+        run: |
+          npm start > /tmp/garmentsflow.log 2>&1 &
+          trap 'cat /tmp/garmentsflow.log' EXIT
+          for i in {1..30}; do curl -fsS http://localhost:3000/api/health && break; sleep 2; done
+          npm run test:smoke
+        env:
+          TEST_EMAIL: ci@example.invalid
+          TEST_PASSWORD: CI-Test-Only-Password-123!
