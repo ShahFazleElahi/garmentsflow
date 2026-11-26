@@ -16,6 +16,7 @@ import { Boxes, Printer, Undo2 } from "lucide-react";
 
 type Pkg = {
   id: string; code: string; boxNo: string; barcode: string | null; status: string; packingDate: string;
+  qrPayload: string | null;
   sourceWarehouse: { name: string }; destLocationId: string | null; netWeight: number; grossWeight: number;
   packagingCost: number; items: { id: string; qty: number; variant: { sku: string; colorName: string; sizeName: string; plan: { code: string } } }[];
 };
@@ -32,6 +33,8 @@ export function PackagingView({ can }: ViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [labelFor, setLabelFor] = useState<Pkg | null>(null);
+  const [scan, setScan] = useState("");
+  const [lookingUp, setLookingUp] = useState(false);
 
   const load = useCallback(() => {
     api<Pkg[]>("ops/packages").then(setRows).catch((e) => setError(e.message));
@@ -51,9 +54,30 @@ export function PackagingView({ can }: ViewProps) {
         <StatCard title="Boxes" value={String(rows.length)} />
         <StatCard title="Units packed" value={fmtNum(packedUnits)} tone="info" />
         <StatCard title="Packed / awaiting dispatch" value={String(rows.filter((r) => r.status === "PACKED").length)} tone="warn" />
-        <StatCard title="Packaging cost" value={fmtMoney(rows.reduce((a, r) => a + Number(r.packagingCost), 0))} />
+        {can("view_financial") && <StatCard title="Packaging cost" value={fmtMoney(rows.reduce((a, r) => a + Number(r.packagingCost), 0))} />}
       </div>
       <ErrorText error={error} />
+      <form className="flex flex-wrap items-end gap-2" onSubmit={async event => {
+        event.preventDefault();
+        if (!scan.trim() || lookingUp) return;
+        setLookingUp(true);
+        setError(null);
+        try {
+          const pkg = await api<Pkg>(`ops/packages/lookup?code=${encodeURIComponent(scan.trim())}`);
+          setLabelFor(pkg);
+          setScan("");
+        } catch (failure) {
+          setError((failure as Error).message);
+        } finally {
+          setLookingUp(false);
+        }
+      }}>
+        <div className="space-y-1">
+          <Label htmlFor="package-lookup">Scan or enter a package code</Label>
+          <Input id="package-lookup" value={scan} onChange={event => setScan(event.target.value)} maxLength={200} />
+        </div>
+        <Button type="submit" variant="outline" disabled={!scan.trim() || lookingUp}>Find package</Button>
+      </form>
       <DataTable
         columns={[
           { key: "code", header: "Package", render: (r) => <span className="font-medium">{String(r.code)}</span> },
@@ -190,7 +214,7 @@ function LabelDialog({ pkg, onClose }: { pkg: Pkg; onClose: () => void }) {
           <p className="font-semibold text-sm">GarmentFlow · {pkg.code}</p>
           <svg ref={barcodeRef} className="mx-auto" />
           {pkg.barcode ? null : <p className="text-xs text-muted-foreground">{pkg.code}</p>}
-          <div className="flex justify-center"><QRCodeSVG value={pkg.barcode ?? pkg.code} size={96} /></div>
+          <div className="flex justify-center"><QRCodeSVG value={pkg.qrPayload ?? pkg.barcode ?? pkg.code} size={96} /></div>
           <div className="text-xs text-muted-foreground">
             <p>Box {pkg.boxNo} · {totalUnits} pcs · {fmtNum(Number(pkg.grossWeight), 1)} kg</p>
             <p>{pkg.items.map((i) => `${i.variant.sku} ×${i.qty}`).join(", ").slice(0, 90)}</p>

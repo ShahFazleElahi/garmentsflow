@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 
 export type Tx = Prisma.TransactionClient;
 
@@ -30,6 +31,66 @@ export function allocateIntegers(total: number, weights: number[]): number[] {
   const res = [...floors];
   for (let k = 0; k < order.length && rem > 0; k++, rem--) res[order[k].i] += 1;
   return res;
+}
+
+function canonicalRequest(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalRequest);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, item]) => [key, canonicalRequest(item)])
+    );
+  }
+
+  return value;
+}
+
+export async function claimTransactionRequest(
+  tx: Prisma.TransactionClient,
+  action: string,
+  body: Record<string, unknown>,
+  userId: string
+) {
+  const raw = body.idempotencyKey;
+
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+
+  if (typeof raw !== "string" ||
+      !raw.trim() ||
+      raw.length > 128) {
+    throw new Error("Invalid idempotency key");
+  }
+
+  const key = `${action}:${userId}:${raw.trim()}`;
+
+  const requestHash = createHash("sha256")
+    .update(JSON.stringify(canonicalRequest(body)))
+    .digest("hex");
+
+  await tx.$executeRaw`
+    INSERT INTO "SalesRequest"
+      ("key", "action", "requestHash", "createdAt")
+    VALUES
+      (${key}, ${action}, ${requestHash}, NOW())
+    ON CONFLICT ("key") DO NOTHING
+  `;
+
+  const request = await tx.salesRequest.findUniqueOrThrow({
+    where: { key },
+  });
+
+  if (request.requestHash !== requestHash ||
+      request.action !== action) {
+    throw new Error("Idempotency key reused with different request");
+  }
+
+  return request;
 }
 
 // ── Document numbering ──
@@ -88,7 +149,7 @@ export async function logActivity(
 
 // ── Double-entry accounting ──
 export const ACC = {
-  CAPITAL: "1000", AR: "1200", ADVANCE: "1300", RM_INV: "1400", FG_INV: "1410",
+  CAPITAL: "1000", AR: "1200", ADVANCE: "1300", RM_INV: "1400", FG_INV: "1410", WIP: "1420",
   INPUT_TAX: "1500", AP_SUPPLIER: "2000", AP_FACTORY: "2010", AP_TAILOR: "2020",
   AP_LOGISTICS: "2030", OUTPUT_TAX: "2100", SALES: "4000", COGS: "4100",
   RM_PURCHASE: "5000", SERVICE: "5100", FREIGHT: "5200", CUSTOMS: "5300",
@@ -130,11 +191,42 @@ export async function postJournal(
   if (!debits.eq(credits)) {
     throw new Error(`Unbalanced journal entry: debit ${debits} != credit ${credits}`);
   }
-  const accounts = await tx.account.findMany({
-    where: { code: { in: lines.map((l) => l.accountCode) } },
-  });
-  const byCode = new Map(accounts.map((a) => [a.code, a]));
+  const deltas = new Map<string, Prisma.Decimal>();
+  for (const line of lines) {
+    const delta = line.debit.minus(line.credit);
+    deltas.set(line.accountCode, (deltas.get(line.accountCode) ?? D(0)).add(delta));
+  }
+
+  // Multi-entry transactions retain this sequence lock until commit.
   const entryNo = await nextDocNo(tx, "JE", data.date);
+  const accounts = await tx.$queryRaw<{ id: string; code: string; balance: Prisma.Decimal; type: string; isActive: boolean }[]>`
+    SELECT "id", "code", "balance", "type", "isActive"
+    FROM "Account"
+    WHERE "code" IN (${Prisma.join([...deltas.keys()])})
+    ORDER BY "code"
+    FOR UPDATE
+  `;
+  const byCode = new Map(accounts.map((a) => [a.code, a]));
+
+  for (const [code, delta] of deltas) {
+    const account = byCode.get(code);
+
+    if (!account) {
+      throw new Error(`Account ${code} not found`);
+    }
+
+    if (!account.isActive) {
+      throw new Error(`Account ${code} is inactive`);
+    }
+
+    if (["CASH", "BANK", "MOBILE_BANKING"].includes(account.type)) {
+      const resulting = D(account.balance).add(delta);
+      if (resulting.lt(0)) {
+        throw new Error(`Unsupported overdraft prevented for account ${account.code}`);
+      }
+    }
+  }
+
   const entry = await tx.journalEntry.create({
     data: {
       entryNo, date: data.date ?? new Date(), memo: data.memo, refType: data.refType,
@@ -148,9 +240,8 @@ export async function postJournal(
       },
     },
   });
-  for (const l of lines) {
-    const acc = byCode.get(l.accountCode)!;
-    const delta = l.debit.minus(l.credit);
+  for (const [code, delta] of deltas) {
+    const acc = byCode.get(code)!;
     await tx.account.update({ where: { id: acc.id }, data: { balance: { increment: delta } } });
   }
   return entry.id;
@@ -172,7 +263,7 @@ export async function reverseJournal(tx: Tx, entryId: string, userId: string, re
     refType: entry.refType ?? undefined, refId: entry.refId ?? undefined,
     refNo: entry.refNo ?? undefined, userId,
     lines: entry.lines.map((l) => ({
-      accountCode: l.account.code, debit: N(l.credit), credit: N(l.debit),
+      accountCode: l.account.code, debit: l.credit, credit: l.debit,
       memo: `Reversal: ${l.memo ?? ""}`,
     })),
   });
@@ -187,9 +278,20 @@ export async function postCashMovement(
   tx: Tx,
   data: { accountCode: string; amount: number | Prisma.Decimal; direction: "IN" | "OUT" }
 ) {
-  const acc = await tx.account.findUnique({ where: { code: data.accountCode } });
+  const [acc] = await tx.$queryRaw<{ id: string; code: string; type: string; balance: Prisma.Decimal }[]>`
+    SELECT "id", "code", "type", "balance"
+    FROM "Account"
+    WHERE "code" = ${data.accountCode}
+    FOR UPDATE
+  `;
   if (!acc) throw new Error(`Payment account ${data.accountCode} not found`);
   const amt = D(data.amount);
+  if (amt.lt(0) || !amt.isFinite()) throw new Error("Invalid cash movement amount");
   const delta = data.direction === "IN" ? amt : amt.neg();
+  const resulting = D(acc.balance).add(delta);
+  if (["CASH", "BANK", "MOBILE_BANKING"].includes(acc.type) &&
+      resulting.lt(0)) {
+    throw new Error(`Unsupported overdraft prevented for account ${data.accountCode}`);
+  }
   await tx.account.update({ where: { id: acc.id }, data: { balance: { increment: delta } } });
 }

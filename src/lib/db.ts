@@ -7,7 +7,10 @@ const globalForPrisma = globalThis as unknown as {
 export const db =
   globalForPrisma.prisma ??
   new PrismaClient({
-    log: ['error'],
+    transactionOptions: {
+      maxWait: 10000,
+      timeout: 60000,
+    },
   })
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db

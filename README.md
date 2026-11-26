@@ -89,4 +89,6 @@ Verify `/api/health`, open the home page and log in. Test the product planning, 
 
 ## Security and release notes
 
-No demo password is supplied. The archive excludes the original local SQLite database, old environment files and generated build files. Location assignments are not an enforced data-isolation boundary. Sales cancellation is disabled pending a complete stock/accounting reversal workflow. Use a trusted owner account until role permissions and full workflows have been acceptance-tested. For the audit limitations, read `AUDIT.md`.
+See the [engineering progress tracker](docs/CODEX_PROGRESS.md), [QA handover](docs/ENGINEERING_HANDOVER.md), and [release plan](docs/RELEASE_CHECKLIST.md).
+
+No demo password is supplied. Existing environment files and generated build files are excluded. Location assignments are enforced by application workflow checks where implemented; final RBAC matrix verification remains release-required. Sales cancellation is blocked because an audited stock and journal reversal workflow is not sufficient for direct cancellation. Use a trusted owner account until all role and workflow acceptance tests pass. For remaining audit scope, read `AUDIT.md`.

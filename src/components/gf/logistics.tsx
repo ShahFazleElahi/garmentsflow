@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiPost, fmtMoney, fmtNum, fmtDate, statusLabel, idem } from "@/lib/gf-api";
 import { PageHeader, StatCard, StatusBadge, ErrorText, DataTable, type Column } from "./ui-bits";
 import type { ViewProps } from "./shell";
@@ -16,7 +16,7 @@ import { Truck, Globe2, ClipboardList, Route } from "lucide-react";
 type Shipment = {
   id: string; code: string; type: string; status: string; dispatchDate: string | null; expectedArrival: string | null;
   actualArrival: string | null; trackingId: string | null; awbNo: string | null; totalCost: number; currency: string;
-  totalCostBdt: number; customsStatus: string | null; incoterms: string | null;
+  totalCostBdt: number; paidAmount: number; freightForwarderId: string | null; customsStatus: string | null; incoterms: string | null;
   originWarehouse: { name: string } | null; destWarehouse: { name: string } | null;
   packages: { id: string; package: { id: string; code: string; boxNo: string; items: { qty: number; variant?: { id: string; sku: string } }[] } }[];
   discrepancies: { id: string; status: string; variant: { sku: string }; damagedQty: number; missingQty: number; receivedQty: number; expectedQty: number }[];
@@ -33,6 +33,7 @@ export function LogisticsView({ mode, can }: ViewProps & { mode: "shipments" | "
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [receiveFor, setReceiveFor] = useState<Shipment | null>(null);
+  const [settleFor, setSettleFor] = useState<Shipment | null>(null);
 
   const load = useCallback(() => {
     if (mode === "shipments") api<Shipment[]>("ops/shipments").then(setRows).catch((e) => setError(e.message));
@@ -112,17 +113,12 @@ export function LogisticsView({ mode, can }: ViewProps & { mode: "shipments" | "
                 {can("post") && ["DISPATCHED", "IN_TRANSIT", "PARTIALLY_RECEIVED"].includes(s.status) && (
                   <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setReceiveFor(s)}>Receive</Button>
                 )}
-                {s.discrepancies.filter((d) => d.status === "OPEN").length > 0 && (
-                  <Button size="sm" variant="ghost" className="h-7 text-xs text-amber-600" onClick={async () => {
-                    const resolution = window.prompt("Resolution (recovered / claimed / written off):");
-                    if (!resolution) return;
-                    try {
-                      for (const d of s.discrepancies.filter((x) => x.status === "OPEN")) {
-                        await apiPost("ops/shipments/resolve-discrepancy", { id: d.id, status: resolution.toLowerCase().includes("write") ? "WRITTEN_OFF" : "RESOLVED", resolution });
-                      }
-                      toast({ title: "Discrepancies resolved" }); load();
-                    } catch (e) { toast({ title: (e as Error).message, variant: "destructive" }); }
-                  }}>Resolve {s.discrepancies.filter((d) => d.status === "OPEN").length}</Button>
+                {can("post") && can("view_financial") && s.type === "INTERNATIONAL" &&
+                  s.status === "RECEIVED_VERIFIED" && s.freightForwarderId && s.totalCost > s.paidAmount && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setSettleFor(s)}>Pay freight</Button>
+                )}
+                {s.discrepancies.some(d => d.status === "OPEN") && (
+                  <span className="self-center text-xs text-amber-700">Discrepancy open</span>
                 )}
               </div>
             );
@@ -132,7 +128,66 @@ export function LogisticsView({ mode, can }: ViewProps & { mode: "shipments" | "
       />
       {createOpen && <CreateShipmentDialog onClose={(d) => { setCreateOpen(false); if (d) load(); }} />}
       {receiveFor && <ReceiveShipmentDialog shipment={receiveFor} onClose={(d) => { setReceiveFor(null); if (d) load(); }} />}
+      {settleFor && <SettleShipmentDialog shipment={settleFor} onClose={(d) => { setSettleFor(null); if (d) load(); }} />}
     </div>
+  );
+}
+
+function SettleShipmentDialog({ shipment, onClose }: { shipment: Shipment; onClose: (done: boolean) => void }) {
+  const outstanding = Number((shipment.totalCost - shipment.paidAmount).toFixed(2));
+  const [amount, setAmount] = useState(outstanding);
+  const [accounts, setAccounts] = useState<{ id: string; name: string; currency: string; type: string; isActive: boolean }[]>([]);
+  const [accountId, setAccountId] = useState("");
+  const [idempotencyKey] = useState(idem);
+  const submitting = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<typeof accounts>("master/accounts")
+      .then(rows => setAccounts(rows.filter(row => row.isActive && row.currency === "BDT" && ["CASH", "BANK", "MOBILE_BANKING"].includes(row.type))))
+      .catch((err: Error) => setError(err.message));
+  }, []);
+  const submit = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await apiPost("finance/logistics-payments/pay", { shipmentId: shipment.id, accountId, amount, idempotencyKey });
+      toast({ title: "Freight payment posted" });
+      onClose(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      submitting.current = false;
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open onOpenChange={open => !open && !submitting.current && onClose(false)}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Pay freight for {shipment.code}</DialogTitle>
+          <DialogDescription>Outstanding {fmtMoney(outstanding, shipment.currency)}</DialogDescription>
+        </DialogHeader>
+        <ErrorText error={error} />
+        <div className="space-y-1">
+          <Label>Amount ({shipment.currency})</Label>
+          <Input type="number" min="0.01" max={outstanding} step="0.01" value={amount} onChange={e => setAmount(Number(e.target.value))} />
+        </div>
+        <div className="space-y-1">
+          <Label>Payment account</Label>
+          <Select value={accountId} onValueChange={setAccountId}>
+            <SelectTrigger><SelectValue placeholder="Select an account" /></SelectTrigger>
+            <SelectContent>{accounts.map(row => <SelectItem key={row.id} value={row.id}>{row.name}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
+          <Button disabled={busy || !accountId || amount <= 0 || amount > outstanding} onClick={submit}>Post payment</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -158,6 +213,8 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
   const [charges, setCharges] = useState({ freight: 0, insurance: 0, customs: 0, duties: 0, taxes: 0, docs: 0, handling: 0, lastMile: 0, other: 0 });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [idempotencyKey] = useState(idem);
+  const submitting = useRef(false);
 
   useEffect(() => {
     api<Pkg[]>("ops/packages").then((all) => setPkgs(all.filter((p) => p.status === "PACKED"))).catch(() => null);
@@ -218,6 +275,8 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
   };
 
   const submit = async (dispatchNow: boolean) => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
       const shipment = await apiPost<{ id: string }>("ops/shipments/create", {
@@ -229,7 +288,7 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
         freightCharge: charges.freight, insuranceCharge: charges.insurance, customsCharge: charges.customs,
         importDuties: charges.duties, taxesCharge: charges.taxes, docCharge: charges.docs,
         handlingCharge: charges.handling, lastMileCharge: charges.lastMile, otherCharge: charges.other,
-        currency: "BDT", exchangeRate: 1, idempotencyKey: idem(),
+        currency: "BDT", exchangeRate: 1, idempotencyKey,
       });
       if (dispatchNow) {
         await apiPost("ops/shipments/dispatch", { id: shipment.id });
@@ -238,11 +297,11 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
         toast({ title: "Shipment created as draft" });
       }
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+    <Dialog open onOpenChange={(o) => !o && !submitting.current && onClose(false)}>
       <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
         <DialogHeader><DialogTitle>New Shipment</DialogTitle><DialogDescription>Select packed boxes. Dispatch moves stock into in-transit; destination stock updates only after verified receiving.</DialogDescription></DialogHeader>
         <ErrorText error={error} />
@@ -313,7 +372,7 @@ function CreateShipmentDialog({ onClose }: { onClose: (done: boolean) => void })
           <span>{selected.length} box(es) · {selectedUnits} pc · total cost</span><span>{fmtMoney(total)}</span>
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
           <Button variant="outline" disabled={busy || selected.length === 0} onClick={() => submit(false)}>Save draft</Button>
           <Button disabled={busy || selected.length === 0} onClick={() => submit(true)} className="bg-violet-600 hover:bg-violet-700">Create & dispatch</Button>
         </DialogFooter>
@@ -343,22 +402,25 @@ function ReceiveShipmentDialog({ shipment, onClose }: { shipment: Shipment; onCl
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [idempotencyKey] = useState(idem);
+  const submitting = useRef(false);
 
   const submit = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
       await apiPost("ops/shipments/receive", {
         id: shipment.id, items: lines.map((l) => ({ variantId: l.variantId, received: l.received, damaged: l.damaged, missing: l.missing })),
-        notes: notes || undefined, idempotencyKey: idem(),
+        notes: notes || undefined, idempotencyKey,
       });
-      const hasIssues = lines.some((l) => l.damaged > 0 || l.missing > 0);
-      toast({ title: "Shipment received", description: hasIssues ? "Discrepancy record(s) created for damaged/missing units." : "All quantities verified." });
+      toast({ title: "Shipment received", description: "All quantities verified." });
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+    <Dialog open onOpenChange={(o) => !o && !submitting.current && onClose(false)}>
       <DialogContent className="max-w-lg max-h-[92vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Receive Shipment — {shipment.code}</DialogTitle><DialogDescription>Box-by-box verification. Damaged units go to quarantine; missing units create traceable discrepancy records. {shipment.type === "INTERNATIONAL" ? "International landed cost is allocated to received variants." : ""}</DialogDescription></DialogHeader>
         <ErrorText error={error} />
@@ -383,7 +445,7 @@ function ReceiveShipmentDialog({ shipment, onClose }: { shipment: Shipment; onCl
         </div>
         <div className="space-y-1"><Label>Notes</Label><Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Package condition, photos reference…" /></div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy} className="bg-emerald-600 hover:bg-emerald-700">Verify & receive</Button>
         </DialogFooter>
       </DialogContent>

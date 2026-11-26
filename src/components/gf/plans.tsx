@@ -117,7 +117,8 @@ function PlanWizard({ open, onClose }: { open: boolean; onClose: (created: boole
   const [sizes, setSizes] = useState<SizeRow[]>(["M", "L", "XL", "XXL"].map((s) => ({ name: s })));
   const [matrix, setMatrix] = useState<Map<string, number>>(new Map());
   const [createdPlanId, setCreatedPlanId] = useState<string | null>(null);
-  const [bomRows, setBomRows] = useState<{ materialId: string; component: string; qtyPerPiece: number; wastagePct: number; estUnitCost: number }[]>([]);
+  const [savedColors, setSavedColors] = useState<Plan["colors"]>([]);
+  const [bomRows, setBomRows] = useState<{ materialId: string; colorId?: string; component: string; qtyPerPiece: number; wastagePct: number; estUnitCost: number }[]>([]);
   const [materials, setMaterials] = useState<{ id: string; name: string; sku: string }[]>([]);
   const [budget, setBudget] = useState({ fabric: 0, lace: 0, embroidery: 0, tailoring: 0, transport: 0, packaging: 0, contingency: 0 });
 
@@ -185,6 +186,7 @@ function PlanWizard({ open, onClose }: { open: boolean; onClose: (created: boole
       if (sizes.length) await apiPost("plans/plans/sizes", { planId: plan.id, sizes: sizes.map((s) => ({ name: s.name, measurements: { chest: s.chest, length: s.length } })) });
       // fetch real ids
       const { plan: fresh } = await api<{ plan: Plan }>(`plans/plans/${plan.id}`);
+      setSavedColors(fresh.colors);
       const cells: Cell[] = [];
       for (const fc of fresh.colors) for (const fs of fresh.sizes) {
         const q = matrix.get(`${(colorIds.find((c) => c.name === fc.name)?.id) ?? fc.name}:${(sizeIds.find((s) => s.name === fs.name)?.id) ?? fs.name}`) ?? 0;
@@ -399,8 +401,15 @@ function PlanWizard({ open, onClose }: { open: boolean; onClose: (created: boole
             {bomRows.map((row, i) => (
               <div key={i} className="grid grid-cols-12 gap-2 items-center">
                 <Select value={row.materialId} onValueChange={(v) => setBomRows((r) => r.map((x, j) => j === i ? { ...x, materialId: v } : x))}>
-                  <SelectTrigger className="col-span-4"><SelectValue placeholder="Material" /></SelectTrigger>
+                  <SelectTrigger className="col-span-3"><SelectValue placeholder="Material" /></SelectTrigger>
                   <SelectContent>{materials.map((m) => <SelectItem key={m.id} value={m.id}>{m.name} ({m.sku})</SelectItem>)}</SelectContent>
+                </Select>
+                <Select value={row.colorId ?? "all"} onValueChange={(v) => setBomRows((r) => r.map((x, j) => j === i ? { ...x, colorId: v === "all" ? undefined : v } : x))}>
+                  <SelectTrigger className="col-span-2" aria-label="BOM color"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All colors</SelectItem>
+                    {savedColors.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  </SelectContent>
                 </Select>
                 <Select value={row.component} onValueChange={(v) => setBomRows((r) => r.map((x, j) => j === i ? { ...x, component: v } : x))}>
                   <SelectTrigger className="col-span-2"><SelectValue /></SelectTrigger>
@@ -408,13 +417,12 @@ function PlanWizard({ open, onClose }: { open: boolean; onClose: (created: boole
                 </Select>
                 <Input type="number" step="0.01" placeholder="Qty/set" className="col-span-2" value={row.qtyPerPiece} onChange={(e) => setBomRows((r) => r.map((x, j) => j === i ? { ...x, qtyPerPiece: Number(e.target.value) } : x))} />
                 <Input type="number" placeholder="Wastage %" className="col-span-1" value={row.wastagePct} onChange={(e) => setBomRows((r) => r.map((x, j) => j === i ? { ...x, wastagePct: Number(e.target.value) } : x))} />
-                <Input type="number" placeholder="Unit ৳" className="col-span-2" value={row.estUnitCost} onChange={(e) => setBomRows((r) => r.map((x, j) => j === i ? { ...x, estUnitCost: Number(e.target.value) } : x))} />
+                <Input type="number" placeholder="Unit ৳" className="col-span-1" value={row.estUnitCost} onChange={(e) => setBomRows((r) => r.map((x, j) => j === i ? { ...x, estUnitCost: Number(e.target.value) } : x))} />
                 <Button size="icon" variant="ghost" className="col-span-1" onClick={() => setBomRows((r) => r.filter((_, j) => j !== i))} aria-label="Remove"><Trash2 className="h-4 w-4 text-red-500" /></Button>
               </div>
             ))}
             {bomRows.length > 0 && (
-              <div className="flex justify-between items-center text-sm">
-                <span>Estimated material cost per set: <strong>{fmtMoney(bomRows.reduce((a, r) => a + r.qtyPerPiece * (1 + r.wastagePct / 100) * r.estUnitCost, 0))}</strong></span>
+              <div className="flex justify-end items-center text-sm">
                 <Button size="sm" onClick={saveBom} disabled={busy || !createdPlanId || bomRows.some((r) => !r.materialId)}>Save BOM</Button>
               </div>
             )}
@@ -501,7 +509,7 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
 }
 
 // ═══════════ Plan Detail (lifecycle) ═══════════
-type BomDetail = { id: string; version: number; status: string; items: { id: string; component: string; qtyPerPiece: number; wastagePct: number; estUnitCost: number; material: { name: string; sku: string }; sizeOverridesJson: string | null }[] };
+type BomDetail = { id: string; version: number; status: string; items: { id: string; component: string; color: { name: string } | null; qtyPerPiece: number; wastagePct: number; estUnitCost: number; material: { name: string; sku: string }; sizeOverridesJson: string | null }[] };
 
 type PlanDetail = {
   plan: Plan & { matrix: Cell[]; measurementCharts?: unknown[]; purchaseOrders?: Record<string, unknown>[]; boms: BomDetail[]; requirements: { id: string; material: { name: string; sku: string }; grossQty: number; stockQty: number; incomingQty: number; shortageQty: number; suggestedQty: number; estCost: number }[]; designs: { id: string; code: string; name: string; status: string; version: number; samples: { id: string; qty: number; status: string; totalCost: number }[] }[] };
@@ -536,7 +544,7 @@ export function PlanDetailView({ planId, navigate, can }: ViewProps & { planId: 
   const sold = plan.variants.reduce((a, v) => a + v.soldQty, 0);
   const actualCost = data.costEntries.reduce((a, e) => a + Number(e.amount), 0);
   const revenue = data.salesItems.reduce((a, s) => a + Number(s.lineTotal), 0);
-  const approvedBom = (plan.boms.find((b) => b.status === "APPROVED") ?? plan.boms[0]) as BomDetail | undefined;
+  const approvedBom = plan.boms[0] as BomDetail | undefined;
 
   const act = async (path: string, body: Record<string, unknown>, okMsg: string) => {
     setBusy(true); setError(null);
@@ -648,6 +656,7 @@ export function PlanDetailView({ planId, navigate, can }: ViewProps & { planId: 
                 columns={[
                   { key: "material", header: "Material", value: (r) => String((r as { material: { name: string } }).material?.name ?? ""), render: (r) => String((r as unknown as { material: { name: string } }).material.name) },
                   { key: "component", header: "Component" },
+                  { key: "color", header: "Color", render: (r) => r.color?.name ?? "All colors" },
                   { key: "qtyPerPiece", header: "Qty/set", render: (r) => fmtNum(Number((r as unknown as { qtyPerPiece: number }).qtyPerPiece), 2) },
                   { key: "wastagePct", header: "Wastage %", render: (r) => `${fmtNum(Number((r as unknown as { wastagePct: number }).wastagePct), 1)}%` },
                   { key: "estUnitCost", header: "Unit cost", render: (r) => fmtMoney(Number((r as unknown as { estUnitCost: number }).estUnitCost)) },

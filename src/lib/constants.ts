@@ -83,6 +83,7 @@ export const ACCOUNTS_SEED = [
   { code: "1300", name: "Vendor Advances", type: "ADVANCE" },
   { code: "1400", name: "Raw Material Inventory", type: "INVENTORY" },
   { code: "1410", name: "Finished Goods Inventory", type: "INVENTORY" },
+  { code: "1420", name: "Work In Progress Inventory", type: "INVENTORY" },
   { code: "1500", name: "Input Tax (Recoverable)", type: "TAX" },
   { code: "2000", name: "Accounts Payable — Suppliers", type: "PAYABLE" },
   { code: "2010", name: "Accounts Payable — Factories", type: "PAYABLE" },
@@ -105,6 +106,8 @@ export const ACCOUNTS_SEED = [
 export const PERMISSIONS = [
   "view", "create", "edit", "approve", "post", "cancel", "reverse", "export",
   "manage_users", "view_financial", "manage_locations",
+  "module_planning", "module_procurement", "module_inventory", "module_production",
+  "module_quality", "module_packaging", "module_logistics", "module_finance", "module_sales",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 

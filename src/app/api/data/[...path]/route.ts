@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getSessionUser, sameOrigin } from "@/server/auth";
+import { canWriteModule, getSessionUser, sameOrigin, type WorkflowPermission } from "@/server/auth";
 import { ok, bad } from "@/server/routes/helpers";
 import * as master from "@/server/routes/master";
 import * as dashboard from "@/server/routes/dashboard";
@@ -27,6 +27,21 @@ const DOMAINS: Record<string, { get?: (segments: string[], req: NextRequest) => 
 
 type Ctx = { params: Promise<{ path?: string[] }> };
 
+function workflowPermission(domain: string, resource: string): WorkflowPermission | undefined {
+  switch (domain) {
+    case "plans": return "module_planning";
+    case "procurement": return resource === "payments" || resource === "invoices" ? "module_finance" : "module_procurement";
+    case "inventory": return "module_inventory";
+    case "production": return "module_production";
+    case "finance": return resource === "sales" ? "module_sales" : "module_finance";
+    case "ops":
+      if (resource === "inspections") return "module_quality";
+      if (resource === "packages") return "module_packaging";
+      if (resource === "shipments" || resource === "transport") return "module_logistics";
+      if (resource === "finished") return "module_inventory";
+  }
+}
+
 async function dispatch(req: NextRequest, ctx: Ctx, method: "GET" | "POST"): Promise<Response> {
   const { path } = await ctx.params;
   const segments = path ?? [];
@@ -44,14 +59,15 @@ async function dispatch(req: NextRequest, ctx: Ctx, method: "GET" | "POST"): Pro
       if (!mod.get) return bad("GET not supported for this domain", 405);
       return await mod.get(rest, req);
     }
+    const permission = workflowPermission(domain, rest[0] ?? "");
+    if (permission && !canWriteModule(user, permission)) return bad(`Permission denied: ${permission}`, 403);
     const multipart = domain === "admin" && rest.join("/") === "documents/upload";
     const body = multipart ? {} : await req.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body)) return bad("Invalid JSON body");
     if (!mod.post) return bad("POST not supported for this domain", 405);
     return await mod.post(rest, body as Record<string, unknown>, req);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Internal server error";
-    console.error(`[api:${domain}]`, e);
+    console.error(`[api:${domain}]`, e instanceof Error ? e.name : "Error");
     return bad("Internal server error", 500);
   }
 }

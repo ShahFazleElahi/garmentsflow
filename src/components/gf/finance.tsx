@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiPost, fmtMoney, fmtNum, fmtDate, statusLabel, idem } from "@/lib/gf-api";
 import { PageHeader, StatCard, StatusBadge, ErrorText, DataTable, type Column } from "./ui-bits";
 import type { ViewProps } from "./shell";
@@ -241,25 +241,29 @@ function VendorInvoicesView() {
 }
 
 function PayVendorDialog({ invoice, onClose }: { invoice: VendorInvoice; onClose: (d: boolean) => void }) {
-  const [amount, setAmount] = useState(Number(invoice.amount) - Number(invoice.paidAmount));
+  const [amount, setAmount] = useState(() => Number((Number(invoice.amount) - Number(invoice.paidAmount)).toFixed(2)));
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountCode, setAccountCode] = useState("1010");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [idempotencyKey] = useState(idem);
+  const submitting = useRef(false);
   useEffect(() => {
     api<Account[]>("master/accounts").then((a) => setAccounts(a.filter((x) => ["CASH", "BANK", "MOBILE_BANKING"].includes(x.type)))).catch(() => null);
   }, []);
   const submit = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true); setError(null);
     try {
       // find invoice id — need id from list; invoice object carries id
-      await apiPost("procurement/payments/pay", { invoiceId: (invoice as unknown as { id: string }).id, amount, accountCode, method: "CASH" });
+      await apiPost("procurement/payments/pay", { invoiceId: (invoice as unknown as { id: string }).id, amount, accountCode, method: "CASH", idempotencyKey });
       toast({ title: "Payment posted", description: fmtMoney(amount) });
       onClose(true);
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { setError((e as Error).message); } finally { submitting.current = false; setBusy(false); }
   };
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose(false)}>
+    <Dialog open onOpenChange={(o) => !o && !submitting.current && onClose(false)}>
       <DialogContent className="max-w-sm">
         <DialogHeader><DialogTitle>Pay {invoice.partner.name}</DialogTitle><DialogDescription>{invoice.invoiceNo} — outstanding {fmtMoney(Number(invoice.amount) - Number(invoice.paidAmount))}</DialogDescription></DialogHeader>
         <ErrorText error={error} />
@@ -269,7 +273,7 @@ function PayVendorDialog({ invoice, onClose }: { invoice: VendorInvoice; onClose
             <SelectContent>{accounts.map((a) => <SelectItem key={a.code} value={a.code}>{a.name}</SelectItem>)}</SelectContent></Select>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onClose(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy || amount <= 0}><Banknote className="h-4 w-4 mr-1" />Post payment</Button>
         </DialogFooter>
       </DialogContent>

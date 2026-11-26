@@ -2,12 +2,32 @@ import { db } from "@/lib/db";
 import { bad, ok, ser, requirePerm, qDate, q } from "./helpers";
 import { NextRequest } from "next/server";
 import { refreshAlerts } from "../notify";
+import { can, scopedLocations } from "../auth";
 
 export async function handleGet(segments: string[], req: NextRequest) {
   const [resource] = segments;
   const auth = await requirePerm(req, "view");
   if ("error" in auth) return auth.error;
   const { user } = auth;
+  const locations = scopedLocations(user);
+  const executive = can(user, "view_financial") && !locations;
+  if (!executive && resource === "dashboard") {
+    const warehouse = locations ? { locationId: { in: locations } } : undefined;
+    const shipmentScope = locations ? { OR: [{ originLocationId: { in: locations } }, { destLocationId: { in: locations } }] } : {};
+    const [material, finished, inTransit] = await Promise.all([
+      db.materialStock.aggregate({ where: { warehouse }, _sum: { qty: true, reservedQty: true } }),
+      db.finishedStock.aggregate({ where: { warehouse }, _sum: { qty: true, packedQty: true } }),
+      db.shipment.count({ where: { ...shipmentScope, status: { in: ["DISPATCHED", "IN_TRANSIT"] } } }),
+    ]);
+    return ok(ser({ operationalOnly: true, kpis: {
+      availableMaterial: material._sum.qty?.sub(material._sum.reservedQty ?? 0) ?? 0,
+      reservedMaterial: material._sum.reservedQty ?? 0,
+      finishedProducts: finished._sum.qty ?? 0,
+      packedProducts: finished._sum.packedQty ?? 0,
+      inTransit,
+    } }));
+  }
+  if (!executive && resource === "daily-ops") return bad("Company-wide daily operations require financial access", 403);
 
   if (resource === "dashboard") {
     const now = new Date();

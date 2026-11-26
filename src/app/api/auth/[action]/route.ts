@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import {
   verifyPassword, createSession, setSessionCookie, clearSessionCookie, getSessionUser,
   rateLimit, clearRateLimit, revokeSession, tokenFromRequest, verifyTotp, consumeRecoveryCode,
-  buildAuthUser, generateTotpSecret, totpProvisioningUri, generateRecoveryCodes, hashPassword, consumeTotp, revokeAllSessions, encryptTotp, decryptTotp, validPassword, sameOrigin,
+  buildAuthUser, generateTotpSecret, totpProvisioningUri, generateRecoveryCodes, hashPassword, consumeTotp, encryptTotp, decryptTotp, validPassword, sameOrigin,
 } from "@/server/auth";
 import { logAudit, logActivity } from "@/server/core";
 import { ok, bad } from "@/server/routes/helpers";
@@ -75,7 +75,11 @@ async function handlePost(req: NextRequest, ctx: { params: Promise<{ action: str
     const existing = await db.user.findUniqueOrThrow({ where: { id: user.id } });
     if (existing.twoFactorEnabled) return bad("Two-factor authentication is already enabled", 409);
     const secret = generateTotpSecret();
-    await db.user.update({ where: { id: user.id }, data: { twoFactorSecret: encryptTotp(secret), twoFactorEnabled: false } });
+    const changed = await db.user.updateMany({
+      where: { id: user.id, twoFactorEnabled: false },
+      data: { twoFactorSecret: encryptTotp(secret) },
+    });
+    if (changed.count !== 1) return bad("Two-factor authentication is already enabled", 409);
     return ok({ secret, uri: totpProvisioningUri(user.email, secret) });
   }
 
@@ -89,10 +93,11 @@ async function handlePost(req: NextRequest, ctx: { params: Promise<{ action: str
     if (!(await rateLimit(`2fa:${user.id}`))) return bad("Too many attempts", 429);
     if (!verifyTotp(decryptTotp(dbUser.twoFactorSecret), code)) return bad("Invalid TOTP code");
     const codes = generateRecoveryCodes();
-    await db.user.update({
-      where: { id: user.id },
+    const changed = await db.user.updateMany({
+      where: { id: user.id, twoFactorEnabled: false, twoFactorSecret: dbUser.twoFactorSecret },
       data: { twoFactorEnabled: true, recoveryCodes: JSON.stringify(codes.hashed) },
     });
+    if (changed.count !== 1) return bad("Two-factor setup changed. Restart setup.", 409);
     return ok({ recoveryCodes: codes.plain });
   }
 
@@ -103,8 +108,16 @@ async function handlePost(req: NextRequest, ctx: { params: Promise<{ action: str
     const dbUser = await db.user.findUnique({ where: { id: user.id } });
     if (typeof current !== "string" || !dbUser || !(await verifyPassword(current, dbUser.passwordHash))) return bad("Current password is incorrect");
     if (!validPassword(next)) return bad("New password must be at least 12 characters and at most 72 UTF-8 bytes");
-    await db.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(next) } });
-    await revokeAllSessions(user.id);
+    const passwordHash = await hashPassword(next);
+    const changed = await db.$transaction(async tx => {
+      const updated = await tx.user.updateMany({
+        where: { id: user.id, passwordHash: dbUser.passwordHash, isActive: true }, data: { passwordHash },
+      });
+      if (updated.count !== 1) return false;
+      await tx.session.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+      return true;
+    });
+    if (!changed) return bad("Password or account changed. Sign in again.", 409);
     await clearSessionCookie();
     return ok({ changed: true });
   }

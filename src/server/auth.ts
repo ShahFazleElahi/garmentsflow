@@ -158,7 +158,18 @@ export type AuthUser = {
   locationIds: string[];
 };
 
-export async function getSessionUser(req: Request): Promise<AuthUser | null> {
+const requestSessions = new WeakMap<Request, Promise<AuthUser | null>>();
+
+export function getSessionUser(req: Request): Promise<AuthUser | null> {
+  let session = requestSessions.get(req);
+  if (!session) {
+    session = readSessionUser(req);
+    requestSessions.set(req, session);
+  }
+  return session;
+}
+
+async function readSessionUser(req: Request): Promise<AuthUser | null> {
   let token: string | undefined;
   const cookieHeader = req.headers.get("cookie") ?? "";
   const match = cookieHeader.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
@@ -168,21 +179,26 @@ export async function getSessionUser(req: Request): Promise<AuthUser | null> {
     token = store.get(SESSION_COOKIE)?.value;
   }
   if (!token) return null;
-  const session = await db.session.findUnique({ where: { token: digest(token) }, include: { user: true } });
+  const session = await db.session.findUnique({ where: { token: digest(token) }, include: {
+    user: { select: { id: true, email: true, name: true, roleKey: true, isActive: true } },
+  } });
   if (!session || session.revokedAt || session.expiresAt < new Date() || !session.user.isActive) return null;
-  return buildAuthUser(session.user.id);
+  return buildAuthUser(session.user.id, session.user);
 }
 
-export async function buildAuthUser(userId: string): Promise<AuthUser> {
-  const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
-  const customRoles = await db.role.findMany({ select: { key: true, permissionsJson: true, name: true } });
+export async function buildAuthUser(userId: string, knownUser?: Pick<AuthUser, "id" | "email" | "name" | "roleKey">): Promise<AuthUser> {
+  const user = knownUser ?? await db.user.findUniqueOrThrow({
+    where: { id: userId }, select: { id: true, email: true, name: true, roleKey: true },
+  });
+  const [custom, locs] = await Promise.all([
+    user.roleKey === "OWNER" ? null : db.role.findUnique({ where: { key: user.roleKey }, select: { permissionsJson: true, name: true } }),
+    db.userLocation.findMany({ where: { userId }, select: { locationId: true } }),
+  ]);
   const def = DEFAULT_ROLES.find((r) => r.key === user.roleKey);
-  const custom = customRoles.find((r) => r.key === user.roleKey);
   let perms: string[];
   if (user.roleKey === "OWNER") perms = ["*"];
   else if (custom) perms = JSON.parse(custom.permissionsJson);
   else perms = def?.permissions ?? [];
-  const locs = await db.userLocation.findMany({ where: { userId }, select: { locationId: true } });
   return {
     id: user.id, email: user.email, name: user.name, roleKey: user.roleKey,
     roleName: custom?.name ?? def?.name ?? user.roleKey,
@@ -194,6 +210,30 @@ export function can(user: AuthUser | null, perm: Permission): boolean {
   if (!user) return false;
   if (user.permissions.includes("*")) return true;
   return user.permissions.includes(perm);
+}
+
+const warehouseRoles = ["DHAKA_WH_MGR", "SYLHET_WH_MGR", "UK_WH_MGR"];
+const moduleRoles = {
+  module_planning: ["PLANNING_MGR", "DESIGN_MGR", "DATA_ENTRY"],
+  module_procurement: ["PROCUREMENT_MGR"],
+  module_inventory: ["PROCUREMENT_MGR", "PRODUCTION_MGR", ...warehouseRoles],
+  module_production: ["PRODUCTION_MGR", ...warehouseRoles],
+  module_quality: ["QC_OFFICER"],
+  module_packaging: warehouseRoles,
+  module_logistics: ["LOGISTICS_MGR", ...warehouseRoles],
+  module_finance: ["ACCOUNTANT"],
+  module_sales: ["SALES_MGR", "ACCOUNTANT"],
+};
+
+export type WorkflowPermission = keyof typeof moduleRoles;
+
+export function canWriteModule(user: AuthUser, permission: WorkflowPermission) {
+  return user.roleKey === "OPS_MANAGER" || moduleRoles[permission].includes(user.roleKey) || can(user, permission);
+}
+
+export function scopedLocations(user: AuthUser): string[] | undefined {
+  if (user.roleKey === "OWNER") return undefined;
+  return user.locationIds.length || warehouseRoles.includes(user.roleKey) ? user.locationIds : undefined;
 }
 
 export async function revokeSession(token: string) {

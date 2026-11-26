@@ -1,16 +1,21 @@
 import { db } from "@/lib/db";
 import { bad, ok, ser, requirePerm, q } from "./helpers";
 import { NextRequest } from "next/server";
-import { hashPassword, revokeAllSessions, can, AuthUser, validPassword } from "../auth";
+import { hashPassword, can, validPassword, scopedLocations } from "../auth";
 import { refreshAlerts } from "../notify";
 import { logAudit } from "../core";
 import { DEFAULT_ROLES, PERMISSIONS } from "@/lib/constants";
+
+const financialNotifications = ["OUTSTANDING_PAYABLE", "BUDGET_OVERRUN"];
+const publicActivity = { amount: null, module: { notIn: ["FINANCE", "SALES"] } };
 
 export async function handleGet(segments: string[], req: NextRequest) {
   const [resource] = segments;
   const auth = await requirePerm(req, "view");
   if ("error" in auth) return auth.error;
   const { user } = auth;
+  const financial = can(user, "view_financial");
+  const locations = scopedLocations(user);
 
   if (resource === "users") {
     if (!can(user, "manage_users")) return bad("Permission denied: manage_users", 403);
@@ -32,27 +37,34 @@ export async function handleGet(segments: string[], req: NextRequest) {
     return ok(rows);
   }
   if (resource === "notifications") {
-    const rows = await refreshAlerts();
+    const rows = locations ? [] : financial ? await refreshAlerts() : await db.notification.findMany({
+      where: { type: { notIn: financialNotifications } }, orderBy: [{ isRead: "asc" }, { createdAt: "desc" }], take: 100,
+    });
     return ok(rows);
   }
   if (resource === "activity") {
-    const rows = await db.activityEvent.findMany({ orderBy: { date: "desc" }, take: 200 });
+    const rows = locations ? [] : await db.activityEvent.findMany({
+      where: financial ? undefined : publicActivity, orderBy: { date: "desc" }, take: 200,
+    });
     return ok(rows);
   }
   if (resource === "documents") {
+    const documentScope = user.roleKey === "OWNER" ? {} : { uploadedById: user.id };
     if (segments[1] === "download") {
-      const doc = await db.document.findUnique({ where: { id: segments[2] ?? "" } });
+      const doc = await db.document.findFirst({ where: { id: segments[2] ?? "", ...documentScope } });
       if (!doc?.content) return bad("Document content not found", 404);
       return new Response(new Uint8Array(doc.content), { headers: { "Content-Type": doc.mimeType ?? "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(doc.fileName)}`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" } });
     }
-    const rows = await db.document.findMany({ orderBy: { createdAt: "desc" }, select: { id: true, code: true, category: true, fileName: true, mimeType: true, size: true, createdAt: true, uploadedById: true } });
+    const rows = await db.document.findMany({ where: documentScope, orderBy: { createdAt: "desc" }, select: { id: true, code: true, category: true, fileName: true, mimeType: true, size: true, createdAt: true, uploadedById: true } });
     return ok(rows);
   }
   if (resource === "timeline") {
+    if (locations) return ok([]);
     const planId = q(req, "planId");
     const batchId = q(req, "batchId");
+    const filters = [...(planId ? [{ planId }] : []), ...(batchId ? [{ batchId }] : [])];
     const rows = await db.activityEvent.findMany({
-      where: { OR: [{ planId: planId ?? undefined }, { batchId: batchId ?? undefined }] },
+      where: { ...(financial ? {} : publicActivity), ...(filters.length ? { OR: filters } : {}) },
       orderBy: { date: "desc" },
       take: 300,
     });
@@ -75,16 +87,27 @@ export async function handlePost(segments: string[], body: Record<string, unknow
       if (!DEFAULT_ROLES.some(r => r.key === roleKey) && !(await db.role.findUnique({ where: { key: roleKey } }))) return bad("Unknown role");
       const exists = await db.user.findUnique({ where: { email: email.toLowerCase().trim() } });
       if (exists) return bad("A user with this email already exists");
-      const created = await db.user.create({
-        data: {
-          email: email.toLowerCase().trim(), passwordHash: await hashPassword(password),
-          name, roleKey, phone, createdById: user.id,
-        },
+      if (locationIds !== undefined && (!Array.isArray(locationIds) || locationIds.some(id => typeof id !== "string" || !id))) return bad("Invalid location assignment");
+      const assigned = [...new Set(locationIds ?? [])];
+      const passwordHash = await hashPassword(password);
+      const created = await db.$transaction(async tx => {
+        if (assigned.length !== await tx.location.count({ where: { id: { in: assigned }, isActive: true } })) {
+          throw new Error("Invalid or inactive assigned location");
+        }
+        const record = await tx.user.create({
+          data: { email: email.toLowerCase().trim(), passwordHash, name: name.trim(), roleKey, phone, createdById: user.id },
+        });
+        if (assigned.length) await tx.userLocation.createMany({
+          data: assigned.map(locationId => ({ userId: record.id, locationId })),
+        });
+        await logAudit(tx, { userId: user.id, userName: user.name, action: "CREATE", entity: "User", entityId: record.id,
+          newJson: { email: record.email, roleKey, locationIds: assigned } });
+        return record;
+      }).catch((error: unknown) => {
+        if (error instanceof Error && error.message === "Invalid or inactive assigned location") return null;
+        throw error;
       });
-      for (const lid of locationIds ?? []) {
-        await db.userLocation.create({ data: { userId: created.id, locationId: lid } }).catch(() => null);
-      }
-      await db.$transaction((tx) => logAudit(tx, { userId: user.id, userName: user.name, action: "CREATE", entity: "User", entityId: created.id, newJson: { email, roleKey } }));
+      if (!created) return bad("Invalid or inactive assigned location");
       return ok({ id: created.id });
     }
     if (action === "update") {
@@ -98,15 +121,25 @@ export async function handlePost(segments: string[], body: Record<string, unknow
       if (name) data.name = name;
       if (phone != null) data.phone = phone;
       if (password && validPassword(password)) data.passwordHash = await hashPassword(password);
-      await db.user.update({ where: { id }, data });
-      if (locationIds) {
-        await db.userLocation.deleteMany({ where: { userId: id } });
-        for (const lid of locationIds) {
-          await db.userLocation.create({ data: { userId: id, locationId: lid } }).catch(() => null);
-        }
+      if (locationIds !== undefined && (!Array.isArray(locationIds) || locationIds.some(location => typeof location !== "string" || !location))) {
+        return bad("Invalid location assignment");
       }
-      if (isActive === false || password || roleKey) await revokeAllSessions(id);
-      await db.$transaction((tx) => logAudit(tx, { userId: user.id, userName: user.name, action: "UPDATE", entity: "User", entityId: id, newJson: { isActive, roleKey } }));
+      const assigned = locationIds ? [...new Set(locationIds)] : undefined;
+      const updated = await db.$transaction(async tx => {
+        if (assigned && assigned.length !== await tx.location.count({ where: { id: { in: assigned }, isActive: true } })) return false;
+        await tx.user.update({ where: { id }, data });
+        if (assigned) {
+          await tx.userLocation.deleteMany({ where: { userId: id } });
+          if (assigned.length) await tx.userLocation.createMany({ data: assigned.map(locationId => ({ userId: id, locationId })) });
+        }
+        if (isActive === false || password || roleKey || assigned) {
+          await tx.session.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+        }
+        await logAudit(tx, { userId: user.id, userName: user.name, action: "UPDATE", entity: "User", entityId: id,
+          newJson: { isActive, roleKey, locationIds: assigned } });
+        return true;
+      });
+      if (!updated) return bad("Invalid or inactive assigned location");
       return ok({ updated: true });
     }
   }
@@ -140,11 +173,20 @@ export async function handlePost(segments: string[], body: Record<string, unknow
   }
 
   if (resource === "notifications" && action === "read-all") {
-    await db.notification.updateMany({ data: { isRead: true } });
+    if (scopedLocations(user)) return bad("Company-wide notifications require unrestricted access", 403);
+    await db.notification.updateMany({
+      where: can(user, "view_financial") ? undefined : { type: { notIn: financialNotifications } },
+      data: { isRead: true },
+    });
     return ok({ read: true });
   }
   if (resource === "notifications" && action === "read") {
-    await db.notification.update({ where: { id: String(body.id) }, data: { isRead: true } });
+    if (scopedLocations(user)) return bad("Company-wide notifications require unrestricted access", 403);
+    const changed = await db.notification.updateMany({
+      where: { id: String(body.id), ...(can(user, "view_financial") ? {} : { type: { notIn: financialNotifications } }) },
+      data: { isRead: true },
+    });
+    if (!changed.count) return bad("Notification not found", 404);
     return ok({ read: true });
   }
 
@@ -181,14 +223,17 @@ export async function handlePost(segments: string[], body: Record<string, unknow
     if (!signature) return bad("File contents do not match the file type");
     const { randomUUID } = await import("node:crypto");
     const code = `DOC-${randomUUID()}`;
-    const doc = await db.document.create({
-      data: {
-        code, category, fileName: file.name.slice(0, 180), mimeType: file.type,
-        size: file.size, storagePath: `database:${code}`, content: new Uint8Array(buffer), uploadedById: user.id,
-      },
-      select: { id: true, code: true, category: true, fileName: true, size: true, createdAt: true },
+    const doc = await db.$transaction(async tx => {
+      const saved = await tx.document.create({
+        data: {
+          code, category, fileName: file.name.slice(0, 180), mimeType: file.type,
+          size: file.size, storagePath: `database:${code}`, content: new Uint8Array(buffer), uploadedById: user.id,
+        },
+        select: { id: true, code: true, category: true, fileName: true, size: true, createdAt: true },
+      });
+      await logAudit(tx, { userId: user.id, userName: user.name, action: "CREATE", entity: "Document", entityId: saved.id, refNo: code, newJson: { fileName: saved.fileName, category } });
+      return saved;
     });
-    await db.$transaction((tx) => logAudit(tx, { userId: user.id, userName: user.name, action: "CREATE", entity: "Document", entityId: doc.id, refNo: code, newJson: { fileName: file.name, category } }));
     return ok(doc);
   }
 
